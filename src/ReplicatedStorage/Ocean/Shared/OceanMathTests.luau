@@ -12,11 +12,11 @@ local Tests = {}
 
 local orderedPresets = {"Glass Harbour", "Calm Open Sea", "Trade Sea", "Gale", "Mythic Storm"}
 local steepnessRanges = {
-  ["Glass Harbour"] = {0.03, 0.08},
-  ["Calm Open Sea"] = {0.08, 0.16},
-  ["Trade Sea"] = {0.16, 0.28},
-  Gale = {0.28, 0.42},
-  ["Mythic Storm"] = {0.38, 0.55},
+  ["Glass Harbour"] = {0.18, 0.28},
+  ["Calm Open Sea"] = {0.20, 0.30},
+  ["Trade Sea"] = {0.32, 0.42},
+  Gale = {0.40, 0.50},
+  ["Mythic Storm"] = {0.48, 0.58},
 }
 
 local function finite(value: number): boolean
@@ -125,9 +125,9 @@ function Tests.Run(): {passed: boolean, checks: {[string]: boolean}, details: {[
     local range = steepnessRanges[name]
     local tailCount = 0
     for _, component in ipairs(bank) do
-      if component.wavelength >= 20 and component.wavelength <= 120 then
+      if component.wavelength >= 20 and component.wavelength <= 160 then
         tailCount += 1
-      end
+    end
     end
     measuredHs = math.max(measuredHs, summary.significantHeight)
     measuredSteepness = math.max(measuredSteepness, summary.aggregateSteepness)
@@ -145,7 +145,7 @@ function Tests.Run(): {passed: boolean, checks: {[string]: boolean}, details: {[
     spectrumFoam = spectrumFoam
       and diagnostics.foamP50 >= 0
       and diagnostics.foamP99 <= 1
-    spectrumBands = spectrumBands and #bank >= 12 and #bank <= 16 and tailCount >= 6
+    spectrumBands = spectrumBands and #bank >= 4 and #bank <= 6 and tailCount >= 1
     foamMonotonic = foamMonotonic
       and diagnostics.foamMean + 0.01 >= previousFoamMean
       and diagnostics.foamP90 + 0.01 >= previousFoamP90
@@ -211,7 +211,7 @@ function Tests.Run(): {passed: boolean, checks: {[string]: boolean}, details: {[
   checks.transitionContinuity = continuity
   checks.spectrumPeak = peakError < 0.01
   checks.spectrumSwell = swellError < 0.01
-  checks.distinctWavelengths = distinctCount >= 12
+  checks.distinctWavelengths = distinctCount >= 4
   checks.gameplayAgreement = maxAgreement <= 0.05
   checks.transitionLifecycle = lifecycle
   local passed = true

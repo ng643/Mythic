@@ -19,6 +19,9 @@ local DEFAULT_HORIZON_RANGE = 6000
 local HORIZON_TILE_MAX_SIZE = 1800
 local MAX_VERTICAL_BOUNDS = 96
 local BASE_COLOR = Color3.fromRGB(7, 64, 91)
+local TROUGH_COLOR = Color3.fromRGB(8, 44, 58)
+local MID_WATER_COLOR = Color3.fromRGB(17, 84, 101)
+local CREST_WATER_COLOR = Color3.fromRGB(82, 154, 168)
 
 local function smoothstep(value: number): number
   local t = math.clamp(value, 0, 1)
@@ -29,6 +32,14 @@ local function keyOf(x: number, z: number): string
   return string.format("%.3f:%.3f", x, z)
 end
 
+local function colorForSurface(displacementY: number, normalY: number, verticalBound: number): Color3
+  local normalized = math.clamp((displacementY + verticalBound) / math.max(verticalBound * 2, 1), 0, 1)
+  local color = normalized < 0.5
+    and TROUGH_COLOR:Lerp(MID_WATER_COLOR, normalized * 2)
+    or MID_WATER_COLOR:Lerp(CREST_WATER_COLOR, (normalized - 0.5) * 2)
+  local grazing = math.clamp((1 - math.clamp(normalY, 0, 1)) * 0.18, 0, 0.18)
+  return color:Lerp(CREST_WATER_COLOR, grazing)
+end
 local function finiteVector(value: Vector3): boolean
   return value.X == value.X and value.Y == value.Y and value.Z == value.Z
     and value.X > -math.huge and value.X < math.huge
@@ -247,6 +258,7 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
   local vertexMap = {}
   local vertices = {}
   local normals = {}
+  local colors = {}
   local labelsX = {}
   local labelsZ = {}
   local triangleCount = 0
@@ -257,13 +269,28 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     if existing then return existing end
     local vertexId = mesh:AddVertex(Vector3.new(x, 0, z))
     local normalId = mesh:AddNormal(Vector3.yAxis)
+    local colorId = mesh:AddColor(MID_WATER_COLOR, 1)
     local index = #vertices + 1
     vertexMap[mapKey] = index
     vertices[index] = vertexId
     normals[index] = normalId
+    colors[index] = colorId
     labelsX[index] = x
     labelsZ[index] = z
     return index
+  end
+  local colorFaceAvailable = true
+  local function addFace(a: number, b: number, c: number)
+    local face = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
+    if colorFaceAvailable then
+      local ok = pcall(function()
+        mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
+      end)
+      if not ok then
+        colorFaceAvailable = false
+        self.runtime:SetAttribute("OceanVertexColorError", "SetFaceColors unavailable")
+      end
+    end
   end
 
   local function edgeIsHole(i: number, j: number): boolean
@@ -289,8 +316,8 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
           local b = getVertex(bx, bz)
           local c = getVertex(cx, cz)
           local d = getVertex(dx, dz)
-          mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
-          mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
+          addFace(a, b, c)
+          addFace(c, b, d)
           triangleCount += 2
         else
           local polygon = {{ax, az}, {bx, bz}, {dx, dz}, {cx, cz}}
@@ -308,7 +335,7 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
             local nextLabel = expanded[polygonIndex % #expanded + 1]
             local first = getVertex(label[1], label[2])
             local second = getVertex(nextLabel[1], nextLabel[2])
-            mesh:AddTriangle(vertices[center], vertices[first], vertices[second])
+            addFace(center, first, second)
             triangleCount += 1
           end
         end
@@ -334,16 +361,22 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     part = part,
     vertices = vertices,
     normals = normals,
+    colors = colors,
     labelsX = labelsX,
     labelsZ = labelsZ,
     labelIndex = vertexMap,
     positions = table.create(#vertices),
     normalValues = table.create(#vertices),
+    colorValues = table.create(#vertices),
+    colorAccumulator = 0,
+    colorCadence = 1 / 12,
+    colorAvailable = true,
     spacing = spacing,
     outerHalf = outerHalf,
     innerHalf = innerHalf,
     innerExtent = innerHalf * spacing,
     outerExtent = outerHalf * spacing,
+    colorBound = math.max(componentBound(state), 4),
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
     boundaryAccumulator = 0,
@@ -353,14 +386,11 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     sharedComponentCap = 6,
     updateNormals = true,
     triangleCount = triangleCount,
-    lastCommittedServerTime = -math.huge,
-    lastNormalServerTime = -math.huge,
-    failureCount = 0,
-    frozen = false,
   }
   for index = 1, #vertices do
     ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
     ring.normalValues[index] = Vector3.yAxis
+    ring.colorValues[index] = MID_WATER_COLOR
   end
   ring.boundaryIndices = {}
   local boundaryTolerance = spacing * 0.51
@@ -390,24 +420,39 @@ function OceanRenderer:_BuildRectMesh(
   if not mesh then error("CreateEditableMesh transition failed: " .. tostring(reason)) end
   local vertices = {}
   local normals = {}
+  local colors = {}
   local labelsX = {}
   local labelsZ = {}
   local vertexMap = {}
   local triangleCount = 0
-
   local function getVertex(x: number, z: number): number
     local mapKey = keyOf(x, z)
     local existing = vertexMap[mapKey]
     if existing then return existing end
     local vertexId = mesh:AddVertex(Vector3.new(x, 0, z))
     local normalId = mesh:AddNormal(Vector3.yAxis)
+    local colorId = mesh:AddColor(MID_WATER_COLOR, 1)
     local index = #vertices + 1
     vertexMap[mapKey] = index
     vertices[index] = vertexId
     normals[index] = normalId
+    colors[index] = colorId
     labelsX[index] = x
     labelsZ[index] = z
     return index
+  end
+  local colorFaceAvailable = true
+  local function addFace(a: number, b: number, c: number)
+    local face = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
+    if colorFaceAvailable then
+      local ok = pcall(function()
+        mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
+      end)
+      if not ok then
+        colorFaceAvailable = false
+        self.runtime:SetAttribute("OceanVertexColorError", "SetFaceColors unavailable")
+      end
+    end
   end
 
   for iz = 0, zCount - 1 do
@@ -420,8 +465,8 @@ function OceanRenderer:_BuildRectMesh(
       local b = getVertex(bx, bz)
       local c = getVertex(cx, cz)
       local d = getVertex(dx, dz)
-      mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
-      mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
+      addFace(a, b, c)
+      addFace(c, b, d)
       triangleCount += 2
     end
   end
@@ -444,19 +489,25 @@ function OceanRenderer:_BuildRectMesh(
     part = part,
     vertices = vertices,
     normals = normals,
+    colors = colors,
     labelsX = labelsX,
     labelsZ = labelsZ,
     labelIndex = vertexMap,
     positions = table.create(#vertices),
     normalValues = table.create(#vertices),
+    colorValues = table.create(#vertices),
     spacing = spacing,
     outerHalf = 0,
     innerHalf = 0,
     innerExtent = self.transitionInnerExtent,
     outerExtent = self.transitionOuterExtent,
+    colorBound = math.max(componentBound(state), 4),
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
     boundaryAccumulator = 0,
+    colorAccumulator = 0,
+    colorCadence = 1 / 12,
+    colorAvailable = true,
     cadence = 1 / 10,
     boundaryCadence = 1 / 30,
     componentCap = 6,
@@ -471,6 +522,7 @@ function OceanRenderer:_BuildRectMesh(
   for index = 1, #vertices do
     ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
     ring.normalValues[index] = Vector3.yAxis
+    ring.colorValues[index] = MID_WATER_COLOR
   end
   ring.boundaryIndices = {}
   local boundaryTolerance = spacing * 0.51
@@ -695,7 +747,7 @@ function OceanRenderer:_Build()
   self:_PublishStats()
 end
 
-function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number, boundaryOnly: boolean?)
+function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number, boundaryOnly: boolean?, updateColors: boolean?)
   if ring.frozen then return end
   if ring.origin ~= anchor then
     boundaryOnly = false
@@ -747,6 +799,9 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
     end
     ring.positions[index] = Vector3.new(ring.labelsX[index] + displacement.X, displacement.Y, ring.labelsZ[index] + displacement.Z)
     if ring.updateNormals then ring.normalValues[index] = normal end
+    if updateColors and ring.colorAvailable then
+      ring.colorValues[index] = colorForSurface(displacement.Y, normal.Y, ring.colorBound or MAX_VERTICAL_BOUNDS)
+    end
   end
   self.stats.lastWaveEvaluateMs += (os.clock() - startEval) * 1000
 
@@ -786,6 +841,18 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
       return
     end
     ring.lastNormalServerTime = serverTime
+  end
+  if updateColors and ring.colorAvailable then
+    local colorOk = pcall(function()
+      for sequence = 1, updateCount do
+        local index = updateIndices and updateIndices[sequence] or sequence
+        ring.mesh:SetColor(ring.colors[index], ring.colorValues[index], 1)
+      end
+    end)
+    if not colorOk then
+      ring.colorAvailable = false
+      self.runtime:SetAttribute("OceanVertexColorError", "SetColor unavailable")
+    end
   end
   ring.failureCount = 0
   ring.lastCommittedServerTime = serverTime
@@ -911,25 +978,31 @@ function OceanRenderer:_Update(dt: number)
   for _, ring in ipairs(self.rings) do
     ring.accumulator += dt
     ring.boundaryAccumulator += dt
+    ring.colorAccumulator = (ring.colorAccumulator or 0) + dt
+    local colorDue = ring.colorAvailable and ring.colorAccumulator >= (ring.colorCadence or 0.083)
+    if colorDue then ring.colorAccumulator %= ring.colorCadence end
     if ring.accumulator >= ring.cadence then
       ring.accumulator %= ring.cadence
       ring.boundaryAccumulator = 0
-      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false)
+      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false, colorDue)
     elseif ring.boundaryAccumulator >= ring.boundaryCadence then
       ring.boundaryAccumulator %= ring.boundaryCadence
-      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true)
+      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true, colorDue)
     end
   end
   for _, transition in ipairs(self.transitions or {}) do
     transition.accumulator += dt
     transition.boundaryAccumulator += dt
+    transition.colorAccumulator = (transition.colorAccumulator or 0) + dt
+    local colorDue = transition.colorAvailable and transition.colorAccumulator >= (transition.colorCadence or 0.083)
+    if colorDue then transition.colorAccumulator %= transition.colorCadence end
     if transition.accumulator >= transition.cadence then
       transition.accumulator %= transition.cadence
       transition.boundaryAccumulator = 0
-      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false)
+      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false, colorDue)
     elseif transition.boundaryAccumulator >= transition.boundaryCadence then
       transition.boundaryAccumulator %= transition.boundaryCadence
-      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true)
+      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true, colorDue)
     end
   end
   self.seamTimer += dt

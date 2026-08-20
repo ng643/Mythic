@@ -54,34 +54,24 @@ local function checkHorizonCoverage(profile): (boolean, string, number)
 end
 
 local function checkProfile(profile): (boolean, string, number, number)
+  if profile.ringCount ~= 1 then return false, "near topology must be one continuous patch", 0, 0 end
+  if not profile.ringResolutions or #profile.ringResolutions ~= 1 then return false, "ring descriptor mismatch", 0, 0 end
+  local nearWidth = (profile.resolution - 1) * profile.spacing
+  if nearWidth < 350 then return false, "near patch is too narrow", 0, 0 end
   local outerHalf = math.floor((profile.resolution - 1) * 0.5)
-  local previousExtent = 0
-  local cellsByLevel = 0
-  for level = 0, profile.ringCount - 1 do
-    local innerHalf = level == 0 and 0 or outerHalf * 0.5
-    if level > 0 then
-      local boundary = innerHalf * profile.spacing * 2 ^ level
-      if math.abs(boundary - previousExtent) > 0.001 then
-        return false, "shared boundary mismatch", cellsByLevel, level
-      end
-    end
-    previousExtent = outerHalf * profile.spacing * 2 ^ level
-    local count = 0
-    for j = -outerHalf, outerHalf - 1 do
-      for i = -outerHalf, outerHalf - 1 do
-        if included(level, i, j, innerHalf) then
-          count += 1
-          if included(level, -i - 1, j, innerHalf) ~= included(level, i, j, innerHalf)
-            or included(level, i, -j - 1, innerHalf) ~= included(level, i, j, innerHalf) then
-            return false, "asymmetric cell-center donut", cellsByLevel, level
-          end
+  local count = 0
+  for j = -outerHalf, outerHalf - 1 do
+    for i = -outerHalf, outerHalf - 1 do
+      if included(0, i, j, 0) then
+        count += 1
+        if included(0, -i - 1, j, 0) ~= included(0, i, j, 0)
+          or included(0, i, -j - 1, 0) ~= included(0, i, j, 0) then
+          return false, "asymmetric continuous patch", count, 0
         end
       end
     end
-    if count <= 0 then return false, "empty ring", cellsByLevel, level end
-    cellsByLevel += count
   end
-  return true, "ok", cellsByLevel, profile.ringCount
+  return count > 0, count > 0 and "ok" or "empty patch", count, 1
 end
 
 function OceanRendererTests.Run(): {[string]: any}

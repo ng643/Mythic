@@ -1,6 +1,7 @@
 --!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local ocean = ReplicatedStorage:WaitForChild("Ocean")
@@ -63,6 +64,7 @@ local SwimmingController = require(clientFolder.SwimmingController)
 local BuoyancyVisualizer = require(clientFolder.BuoyancyVisualizer)
 local ShorelineController = require(clientFolder.ShorelineController)
 local VisualSampleScheduler = require(clientFolder.VisualSampleScheduler)
+local OceanReferenceHarness = require(clientFolder.OceanReferenceHarness)
 
 clearCapabilityLab(runtime)
 hidePlaceholderBaseplate()
@@ -87,20 +89,21 @@ for _, debugName in ipairs({"OceanDebugBuoyancy", "OceanDebugSeams", "OceanDebug
   if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, false) end
 end
 local qualityOverride = runtime:GetAttribute("OceanQualityOverride")
-local requestedQuality = type(qualityOverride) == "string" and qualityOverride or "Medium"
+local requestedQuality = type(qualityOverride) == "string" and qualityOverride or "High"
 local requestedProfile = QualityProfiles.Get(requestedQuality)
 local validRequestedQuality = requestedQuality == "Ultra"
   or requestedQuality == "High"
   or requestedQuality == "Medium"
   or requestedQuality == "Low"
 if not validRequestedQuality or requestedQuality == "Fallback" or not requestedProfile or requestedProfile.resolution == 0 then
-  requestedQuality = "Medium"
+  requestedQuality = "High"
   runtime:SetAttribute("OceanQualityOverrideRejected", true)
 end
 
 local clock = OceanClock.new(initialState.epochServerTime)
 local waveField = WaveField.new(initialState, clock)
 local visualSamples = VisualSampleScheduler.new(waveField)
+local referenceHarness = nil
 local renderer = OceanRenderer.new(waveField)
 local materialController = WaterMaterialController.new(runtime)
 local qualityController = OceanQualityController.new(renderer, runtime)
@@ -114,6 +117,23 @@ local shorelineController = ShorelineController.new(waveField, runtime, visualSa
 local qualityAttributeConnection = nil
 local stateConnection = nil
 local startedStops = {}
+if RunService:IsStudio() then
+  local function ensureReferenceHarness()
+    if not referenceHarness then
+      referenceHarness = OceanReferenceHarness.new(waveField, runtime)
+    end
+    return referenceHarness
+  end
+  _G.OceanReferenceHarness = {
+    Start = function() ensureReferenceHarness():Start() end,
+    Stop = function()
+      if referenceHarness then referenceHarness:Stop() end
+    end,
+    SetMode = function(mode: string) return ensureReferenceHarness():SetMode(mode) end,
+    SetDebug = function(name: string, enabled: boolean) ensureReferenceHarness():SetDebug(name, enabled) end,
+    SetMaterialCandidate = function(candidate: string) return ensureReferenceHarness():SetMaterialCandidate(candidate) end,
+  }
+end
 
 local function failStartup(subsystem: string, reason: any)
   local message = string.format("%s: %s", subsystem, tostring(reason))
@@ -239,6 +259,8 @@ script.Destroying:Connect(function()
   buoyancyVisualizer:Stop()
   shorelineController:Stop()
   renderer:Stop()
+  if referenceHarness then referenceHarness:Stop() referenceHarness = nil end
+  if RunService:IsStudio() then _G.OceanReferenceHarness = nil end
   if qualityAttributeConnection then qualityAttributeConnection:Disconnect() end
   if stateConnection then stateConnection:Disconnect() end
 end)

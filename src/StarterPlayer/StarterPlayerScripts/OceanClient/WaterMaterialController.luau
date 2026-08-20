@@ -80,8 +80,10 @@ function WaterMaterialController.new(runtime)
     transitionDuration = 0,
     connection = nil,
     childAddedConnection = nil,
+    materialCandidateConnection = nil,
     assetFetchFailedConnection = nil,
     surfaces = {},
+    candidate = "PBR",
     applying = false,
     materialVariant = "OceanWater",
     manifestVersion = "",
@@ -98,6 +100,8 @@ function WaterMaterialController.new(runtime)
     transitionAccumulator = 0,
     warnedMissingVariant = false,
   }, WaterMaterialController)
+  local configuredCandidate = runtime:GetAttribute("OceanMaterialCandidate")
+  if configuredCandidate == "Glass" then self.candidate = "Glass" end
   self:_RefreshManifest()
   return self
 end
@@ -114,6 +118,7 @@ end
 
 function WaterMaterialController:_PublishManifest(values)
   local runtime = self.runtime
+  runtime:SetAttribute("OceanMaterialCandidate", self.candidate)
   runtime:SetAttribute("OceanMaterialPath", "MaterialVariant")
   runtime:SetAttribute("OceanMaterialVariant", self.materialVariant)
   runtime:SetAttribute("OceanMaterialManifestVersion", self.manifestVersion)
@@ -179,12 +184,14 @@ function WaterMaterialController:_RegisterSurface(child: Instance)
   self.surfaces[child] = true
   local variant = MaterialService:FindFirstChild(self.materialVariant)
   local variantPresent = variant and variant:IsA("MaterialVariant")
-  child.Material = Enum.Material.SmoothPlastic
-  child.MaterialVariant = variantPresent and self.materialVariant or ""
+  local glass = self.candidate == "Glass"
+  child.Material = glass and Enum.Material.Glass or Enum.Material.SmoothPlastic
+  child.MaterialVariant = glass and "" or (variantPresent and self.materialVariant or "")
   child.Color = WATER_SURFACE_COLOR
   child.Transparency = 0
-  child.Reflectance = 0.04
-  -- Keep MeshPart.Color authoritative when the neutral ColorMap is empty.
+  child.Reflectance = glass and 0.12 or 0.04
+  local oldSurfaceAppearance = child:FindFirstChild("OceanSurfaceAppearance")
+  if oldSurfaceAppearance then oldSurfaceAppearance:Destroy() end
   if not variantPresent and not self.warnedMissingVariant then
     self.warnedMissingVariant = true
     warn("WaterMaterialController | configured MaterialVariant is missing: " .. self.materialVariant)
@@ -268,6 +275,16 @@ function WaterMaterialController:Apply(state)
   self.transitionStart = state.bankBlendStart or Workspace:GetServerTimeNow()
   self.transitionDuration = math.max(blendDuration, 0.1)
 end
+function WaterMaterialController:SetCandidate(candidate: string)
+  if candidate ~= "PBR" and candidate ~= "Glass" then
+    return false, "unknown material candidate"
+  end
+  self.candidate = candidate
+  if self.current then
+    self:_ApplyVisual(self.current, "material candidate")
+  end
+  return true
+end
 
 function WaterMaterialController:Start()
   if self.connection then return end
@@ -277,6 +294,10 @@ function WaterMaterialController:Start()
   self.childAddedConnection = self.runtime.ChildAdded:Connect(function(child)
     self:_RegisterSurface(child)
     if self.current then self:_ApplyTint(self.current) end
+  end)
+  self.materialCandidateConnection = self.runtime:GetAttributeChangedSignal("OceanMaterialCandidate"):Connect(function()
+    local candidate = self.runtime:GetAttribute("OceanMaterialCandidate")
+    if candidate == "PBR" or candidate == "Glass" then self:SetCandidate(candidate) end
   end)
   self.connection = RunService.RenderStepped:Connect(function(dt)
     if not self.target or not self.from then return end
@@ -307,6 +328,7 @@ function WaterMaterialController:Stop()
   if self.connection then self.connection:Disconnect() self.connection = nil end
   if self.childAddedConnection then self.childAddedConnection:Disconnect() self.childAddedConnection = nil end
   if self.assetFetchFailedConnection then self.assetFetchFailedConnection:Disconnect() self.assetFetchFailedConnection = nil end
+  if self.materialCandidateConnection then self.materialCandidateConnection:Disconnect() self.materialCandidateConnection = nil end
   self.from = nil
   self.target = nil
   table.clear(self.surfaces)
