@@ -11,7 +11,28 @@ local OceanRenderer = {}
 OceanRenderer.__index = OceanRenderer
 
 local TWO_PI = math.pi * 2
-local MAX_VERTICAL_BOUNDS = 32
+local DEFAULT_VERTICAL_BOUNDS = 64
+
+local function applyWaterSurfaceAppearance(part: MeshPart)
+  local slot = game.ReplicatedStorage.Ocean.Assets.WaterAppearances:FindFirstChild("OceanWaterPBR")
+  local function asset(name: string, fallback: string): string
+    local value = slot and slot:GetAttribute(name)
+    return type(value) == "string" and value or fallback
+  end
+  local appearance = part:FindFirstChild("OceanSurfaceAppearance")
+  if not appearance then
+    appearance = Instance.new("SurfaceAppearance")
+    appearance.Name = "OceanSurfaceAppearance"
+    appearance.Parent = part
+  end
+  pcall(function()
+    appearance.ColorMap = asset("ColorMap", "rbxassetid://128922037556159")
+    appearance.NormalMap = asset("NormalMap", "rbxassetid://101286961773967")
+    appearance.RoughnessMap = asset("RoughnessMap", "rbxassetid://111100454366205")
+    appearance.MetalnessMap = asset("MetalnessMap", "rbxassetid://126230944196062")
+    appearance.AlphaMode = Enum.AlphaMode.Opaque
+  end)
+end
 
 local function setOceanPartProperties(part: MeshPart)
   part.Anchored = true
@@ -22,17 +43,20 @@ local function setOceanPartProperties(part: MeshPart)
   part.Massless = true
   part.DoubleSided = true
   part.Material = Enum.Material.SmoothPlastic
+  part.MaterialVariant = "OceanWater"
   part.Color = Color3.fromRGB(5, 62, 86)
-  part.Reflectance = 0.08
-  part.Transparency = 0.04
+  part.Reflectance = 0
+  part.Transparency = 0
+  applyWaterSurfaceAppearance(part)
 end
 
 local function cellIncluded(level: number, i: number, j: number, innerHalf: number): boolean
   if level == 0 then
     return true
   end
-  -- One-cell overlap is the conservative stitch band for this prototype.
-  return math.max(math.abs(i), math.abs(j)) >= math.max(innerHalf - 1, 0)
+  -- Donut cells are disjoint; the inner edge is aligned to the previous
+  -- ring's outer edge and the outer edge morphs to mean sea level.
+  return math.max(math.abs(i), math.abs(j)) >= innerHalf
 end
 
 function OceanRenderer.new(waveField)
@@ -50,10 +74,12 @@ function OceanRenderer.new(waveField)
     rings = {},
     running = false,
     visible = true,
+    baseVisible = true,
+    farVisible = true,
     connection = nil,
     fallback = nil,
     farPlane = nil,
-    stats = {vertexCount = 0, triangleCount = 0, lastFrameMs = 0, lastUpdateMs = 0, ringCount = 0, fallback = false},
+    stats = {vertexCount = 0, triangleCount = 0, lastFrameMs = 0, lastOceanMs = 0, lastUpdateMs = 0, ringCount = 0, fallback = false},
     serverTime = 0,
   }, OceanRenderer)
 end
@@ -78,6 +104,7 @@ function OceanRenderer:_BuildRing(level: number)
   local vertexMap: {[string]: number} = {}
   local vertices: {number} = {}
   local normals: {number} = {}
+  local uvs: {number} = {}
   local labels: {Vector2} = {}
   local positions: {Vector3} = {}
   local normalValues: {Vector3} = {}
@@ -93,10 +120,12 @@ function OceanRenderer:_BuildRing(level: number)
     local label = Vector2.new(i * spacing, j * spacing)
     local id = mesh:AddVertex(Vector3.new(label.X, 0, label.Y))
     local normalId = mesh:AddNormal(Vector3.yAxis)
+    local uvId = mesh:AddUV(Vector2.new(label.X / 10, label.Y / 10))
     local index = #vertices + 1
     vertexMap[mapKey] = index
     vertices[index] = id
     normals[index] = normalId
+    uvs[index] = uvId
     labels[index] = label
     positions[index] = Vector3.new(label.X, 0, label.Y)
     normalValues[index] = Vector3.yAxis
@@ -113,19 +142,28 @@ function OceanRenderer:_BuildRing(level: number)
         local d = getVertex(i + 1, j + 1)
         local faceOne = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
         mesh:SetFaceNormals(faceOne, {normals[a], normals[b], normals[c]})
+        pcall(function() mesh:SetFaceUVs(faceOne, {uvs[a], uvs[b], uvs[c]}) end)
         local faceTwo = mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
         mesh:SetFaceNormals(faceTwo, {normals[c], normals[b], normals[d]})
+        pcall(function() mesh:SetFaceUVs(faceTwo, {uvs[c], uvs[b], uvs[d]}) end)
         triangleCount += 2
       end
     end
   end
 
-  -- Unreferenced vertices keep the MeshPart bounds valid for moving crests.
-  mesh:AddVertex(Vector3.new(0, -MAX_VERTICAL_BOUNDS, 0))
-  mesh:AddVertex(Vector3.new(0, MAX_VERTICAL_BOUNDS, 0))
+  -- Bounds are derived from the active bank instead of a paper-thin mesh.
+  local verticalBound = DEFAULT_VERTICAL_BOUNDS
+  local state = self.waveField:GetState()
+  local componentBound = 0
+  for _, component in ipairs(state.bankA) do componentBound += math.abs(component.amplitude) end
+  for _, component in ipairs(state.bankB) do componentBound = math.max(componentBound, math.abs(component.amplitude)) end
+  verticalBound = math.clamp(math.max(verticalBound, componentBound * 2 + 8), 16, 96)
+  mesh:AddVertex(Vector3.new(0, -verticalBound, 0))
+  mesh:AddVertex(Vector3.new(0, verticalBound, 0))
   local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
   part.Name = string.format("OceanClipmap_L%d", level)
   setOceanPartProperties(part)
+  part.DoubleSided = level == 0
   part.Parent = self.runtime
   local ring = {
     level = level,
@@ -133,6 +171,7 @@ function OceanRenderer:_BuildRing(level: number)
     part = part,
     vertices = vertices,
     normals = normals,
+    uvs = uvs,
     labels = labels,
     positions = positions,
     normalValues = normalValues,
@@ -140,9 +179,9 @@ function OceanRenderer:_BuildRing(level: number)
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
     cadence = 1 / math.max(profile.nearCadence / 2 ^ level, 3),
-    -- Keep long-wave samples identical across ring boundaries; short-wave filtering
-    -- can be introduced only with a measured morph band.
-    componentCap = 14,
+    -- LOD0 is the gameplay-authoritative full bank; outer rings use the
+    -- profile cap with the bank's semantic long-wave ordering.
+    componentCap = level == 0 and self.waveField:GetGameplayComponentCap() or math.min(profile.waveCap, self.waveField:GetGameplayComponentCap()),
     updateNormals = level <= profile.normalRings,
     triangleCount = triangleCount,
     batchAvailable = false,
@@ -163,8 +202,9 @@ function OceanRenderer:_BuildFallback()
   part.CanQuery = false
   part.CastShadow = false
   part.Material = Enum.Material.SmoothPlastic
+  part.MaterialVariant = "OceanWater"
   part.Color = Color3.fromRGB(5, 62, 86)
-  part.Reflectance = 0.05
+  part.Reflectance = 0
   part.Size = Vector3.new(8192, 0.25, 8192)
   part.Position = Vector3.new(0, 0, 0)
   part.Transparency = 0.05
@@ -183,9 +223,10 @@ function OceanRenderer:_BuildFarPlane()
   part.CanQuery = false
   part.CastShadow = false
   part.Material = Enum.Material.SmoothPlastic
+  part.MaterialVariant = "OceanWater"
   part.Color = Color3.fromRGB(5, 62, 86)
-  part.Reflectance = 0.04
-  part.Size = Vector3.new(2048, 0.25, 2048)
+  part.Reflectance = 0
+  part.Size = Vector3.new(8192, 0.25, 8192)
   part.Transparency = 0
   part.Parent = self.runtime
   self.farPlane = part
@@ -215,11 +256,13 @@ function OceanRenderer:_Build()
   end
   self.stats.fallback = false
   local ok, reason = pcall(function()
-    local maxExtent = 1900
-    local ringLimit = self.runtime:GetAttribute("OceanExperimentalClipmaps") == true and self.profile.ringCount or 1
+    local ringLimit = self.runtime:GetAttribute("OceanExperimentalClipmaps") == false and 1 or self.profile.ringCount
+    -- EditableMesh MeshPart extents are capped by the engine; stop before
+    -- allocation failure and keep the already-built inner rings.
+    local maxEditableExtent = 1900
     for level = 0, ringLimit - 1 do
       local levelExtent = self.profile.spacing * 2 ^ level * (self.profile.resolution - 1)
-      if levelExtent > maxExtent then
+      if levelExtent > maxEditableExtent then
         break
       end
       self:_BuildRing(level)
@@ -230,6 +273,8 @@ function OceanRenderer:_Build()
   elseif not self.stats.fallback then
     self:_BuildFarPlane()
   end
+  self:SetBaseVisible(self.baseVisible)
+  self:SetFarVisible(self.farVisible)
   self.stats.ringCount = #self.rings
 end
 
@@ -251,17 +296,27 @@ function OceanRenderer:SetQuality(profileName: string)
   end
 end
 
-function OceanRenderer:SetVisible(visible: boolean)
-  self.visible = visible
+function OceanRenderer:SetBaseVisible(visible: boolean)
+  self.baseVisible = visible
   for _, ring in ipairs(self.rings) do
     ring.part.Transparency = visible and 0.04 or 1
   end
   if self.fallback then
     self.fallback.Transparency = visible and 0.05 or 1
   end
+end
+
+function OceanRenderer:SetFarVisible(visible: boolean)
+  self.farVisible = visible
   if self.farPlane then
     self.farPlane.Transparency = visible and 0 or 1
   end
+end
+
+function OceanRenderer:SetVisible(visible: boolean)
+  self.visible = visible
+  self:SetBaseVisible(visible)
+  self:SetFarVisible(visible)
 end
 
 function OceanRenderer:_UpdateRing(ring, serverTime: number, cameraPosition: Vector3)
@@ -278,30 +333,46 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, cameraPosition: Vec
     ring.part.CFrame = CFrame.new(snapped.X, self.waveField:GetState().seaLevel, snapped.Y)
   end
   local origin = ring.origin
+  local seaLevel = self.waveField:GetState().seaLevel
+  local outerExtent = math.max((self.profile.resolution - 1) * 0.5 * spacing, 1)
   local sampleOptions = {
     inverseIterations = 1,
     includeEvents = true,
     componentCap = ring.componentCap,
     foamMultiplier = 1,
   }
+  debug.profilebegin("Ocean/WaveEvaluate")
   for index, localLabel in ipairs(ring.labels) do
     local worldLabel = origin + localLabel
     local sample = self.waveField:SampleLagrangian(worldLabel, serverTime, sampleOptions)
-    ring.positions[index] = sample.position - Vector3.new(origin.X, self.waveField:GetState().seaLevel, origin.Y)
+    local edge = math.max(math.abs(localLabel.X), math.abs(localLabel.Y)) / outerExtent
+    local morph = 1
+    if edge > 0.72 then
+      local t = math.clamp((edge - 0.72) / 0.28, 0, 1)
+      morph = 1 - t * t * (3 - 2 * t)
+    end
+    local baseWorld = Vector3.new(worldLabel.X, seaLevel, worldLabel.Y)
+    local displacement = sample.position - baseWorld
+    ring.positions[index] = Vector3.new(localLabel.X, 0, localLabel.Y) + displacement * morph
     if ring.updateNormals then
-      ring.normalValues[index] = sample.normal
+      ring.normalValues[index] = sample.normal:Lerp(Vector3.yAxis, 1 - morph).Unit
     end
   end
+  debug.profileend()
   local mesh = ring.mesh
   local start = os.clock()
   local ok = pcall(function()
+    debug.profilebegin("Ocean/VertexCommit")
     for index, vertexId in ipairs(ring.vertices) do
       mesh:SetPosition(vertexId, ring.positions[index])
     end
+    debug.profileend()
     if ring.updateNormals then
+      debug.profilebegin("Ocean/Normals")
       for index, normalId in ipairs(ring.normals) do
         mesh:SetNormal(normalId, ring.normalValues[index])
       end
+      debug.profileend()
     end
   end)
   if not ok then
@@ -318,7 +389,7 @@ function OceanRenderer:_Update(dt: number)
   self.stats.lastUpdateMs = 0
   self.serverTime = self.waveField:StepClock(dt)
   if self.farPlane then
-    self.farPlane.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel - MAX_VERTICAL_BOUNDS * 0.5, camera.CFrame.Position.Z)
+    self.farPlane.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel, camera.CFrame.Position.Z)
   end
   if not self.stats.fallback then
     for _, ring in ipairs(self.rings) do
@@ -336,10 +407,11 @@ function OceanRenderer:_Update(dt: number)
     end
   else
     if self.fallback then
-      self.fallback.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel - 0.15, camera.CFrame.Position.Z)
+      self.fallback.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel, camera.CFrame.Position.Z)
     end
   end
-  self.stats.lastFrameMs = (os.clock() - start) * 1000
+  self.stats.lastOceanMs = (os.clock() - start) * 1000
+  self.stats.lastFrameMs = dt * 1000
 end
 
 function OceanRenderer:Start()

@@ -6,9 +6,15 @@ local Workspace = game:GetService("Workspace")
 local SprayController = {}
 SprayController.__index = SprayController
 
-local function hash(x: number, z: number, bucket: number): number
-  local value = math.sin(x * 27.11 + z * 91.73 + bucket * 13.37) * 15731.743
+local function hash(x: number, z: number): number
+  local value = math.sin(x * 27.11 + z * 91.73) * 15731.743
   return value - math.floor(value)
+end
+
+local function sprayTexture(emitter: ParticleEmitter)
+  pcall(function()
+    emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+  end)
 end
 
 function SprayController.new(waveField, runtime)
@@ -16,23 +22,40 @@ function SprayController.new(waveField, runtime)
 end
 
 function SprayController:_BuildPool()
-  for _, part in ipairs(self.pool) do part:Destroy() end
+  for _, entry in ipairs(self.pool) do entry.anchor:Destroy() end
   table.clear(self.pool)
   for index = 1, self.cap do
-    local part = Instance.new("Part")
-    part.Name = string.format("OceanSpray_%02d", index)
-    part.Shape = Enum.PartType.Ball
-    part.Anchored = true
-    part.CanCollide = false
-    part.CanTouch = false
-    part.CanQuery = false
-    part.CastShadow = false
-    part.Material = Enum.Material.Neon
-    part.Color = Color3.fromRGB(224, 250, 250)
-    part.Size = Vector3.new(0.18, 0.18, 0.18)
-    part.Transparency = 1
-    part.Parent = self.runtime
-    table.insert(self.pool, part)
+    local anchor = Instance.new("Part")
+    anchor.Name = string.format("StormSprayEmitter_%02d", index)
+    anchor.Anchored = true
+    anchor.CanCollide = false
+    anchor.CanTouch = false
+    anchor.CanQuery = false
+    anchor.CastShadow = false
+    anchor.Transparency = 1
+    anchor.Size = Vector3.new(0.1, 0.1, 0.1)
+    anchor.Parent = self.runtime
+    local attachment = Instance.new("Attachment")
+    attachment.Name = "SprayAttachment"
+    attachment.Parent = anchor
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "StormSpray"
+    emitter.Enabled = false
+    emitter.Rate = 0
+    emitter.Lifetime = NumberRange.new(0.25, 0.8)
+    emitter.Speed = NumberRange.new(2.5, 8)
+    emitter.Drag = 1.2
+    emitter.SpreadAngle = Vector2.new(28, 28)
+    emitter.Acceleration = Vector3.new(0, -10, 0)
+    emitter.Rotation = NumberRange.new(0, 360)
+    emitter.RotSpeed = NumberRange.new(-90, 90)
+    emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.08), NumberSequenceKeypoint.new(0.2, 0.38), NumberSequenceKeypoint.new(1, 0.02)})
+    emitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.12), NumberSequenceKeypoint.new(0.6, 0.42), NumberSequenceKeypoint.new(1, 1)})
+    emitter.Color = ColorSequence.new(Color3.fromRGB(218, 246, 246))
+    emitter.LightEmission = 0.08
+    sprayTexture(emitter)
+    emitter.Parent = attachment
+    table.insert(self.pool, {anchor = anchor, emitter = emitter, lastEmit = -math.huge})
   end
 end
 
@@ -46,44 +69,48 @@ function SprayController:Start()
   self:_BuildPool()
   self.connection = RunService.RenderStepped:Connect(function(dt)
     self.clock += dt
-    if self.clock < 0.08 then return end
+    if self.runtime:GetAttribute("OceanDebugSpray") == false then
+      for _, entry in ipairs(self.pool) do entry.emitter.Enabled = false end
+      return
+    end
+    if self.clock < 0.1 then return end
     self.clock = 0
     local camera = Workspace.CurrentCamera
     if not camera then return end
+    debug.profilebegin("Ocean/Spray")
     local now = self.waveField:GetSynchronizedTime()
     local center = camera.CFrame.Position
-    local bucket = math.floor(now * 2)
     local used = 0
     for gz = -2, 2 do
       for gx = -2, 2 do
         if used >= #self.pool then break end
         local worldX = math.floor(center.X / 24 + 0.5) * 24 + gx * 24
         local worldZ = math.floor(center.Z / 24 + 0.5) * 24 + gz * 24
-        local gate = hash(worldX, worldZ, bucket)
-        if gate > 0.62 then
-          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 1, componentCap = 10, foamMultiplier = 1.8})
-          if sample.foam > 0.08 and (sample.position - center).Magnitude < 220 then
+        if hash(worldX, worldZ) > 0.12 then
+          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = 12, foamMultiplier = 1.8})
+          if sample.foam > 0.24 and (sample.position - center).Magnitude < 260 then
             used += 1
-            local spray = self.pool[used]
-            local lift = 0.35 + sample.foam * 1.6
-            local jitter = Vector3.new((hash(worldZ, worldX, bucket + 3) - 0.5) * 1.8, hash(worldX + 7, worldZ - 3, bucket + 5) * lift, (hash(worldX - 5, worldZ + 11, bucket + 7) - 0.5) * 1.8)
-            spray.Position = sample.position + sample.normal * lift + jitter
-            local size = 0.12 + sample.foam * 0.3
-            spray.Size = Vector3.new(size, size, size)
-            spray.Transparency = math.clamp(0.65 - sample.foam * 0.45, 0.12, 0.7)
+            local entry = self.pool[used]
+            local tangent = Vector3.new(sample.velocity.X, 0, sample.velocity.Z)
+            if tangent.Magnitude < 0.01 then tangent = Vector3.xAxis end
+            entry.anchor.CFrame = CFrame.lookAt(sample.position + sample.normal * (0.2 + sample.foam), sample.position + tangent.Unit, sample.normal)
+            entry.emitter.Enabled = true
+            if now - entry.lastEmit > 0.18 then
+              entry.emitter:Emit(math.clamp(math.floor(sample.foam * 4) + 1, 1, 8))
+              entry.lastEmit = now
+            end
           end
         end
       end
     end
-    for index = used + 1, #self.pool do
-      self.pool[index].Transparency = 1
-    end
+    for index = used + 1, #self.pool do self.pool[index].emitter.Enabled = false end
+    debug.profileend()
   end)
 end
 
 function SprayController:Stop()
   if self.connection then self.connection:Disconnect() self.connection = nil end
-  for _, part in ipairs(self.pool) do part:Destroy() end
+  for _, entry in ipairs(self.pool) do entry.anchor:Destroy() end
   table.clear(self.pool)
 end
 

@@ -1,6 +1,7 @@
 --!strict
 
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 
 local ShipRegistry = {}
 ShipRegistry.__index = ShipRegistry
@@ -17,6 +18,28 @@ function ShipRegistry.new()
     self:Register(instance)
   end
   return self
+end
+
+function ShipRegistry:_ApplyOwnership(entry)
+  local desiredOwner: Player? = nil
+  if entry.policy == "Driver" then
+    local seat = entry.model:FindFirstChild("DriverSeat", true)
+    local occupant = seat and seat:IsA("Seat") and seat.Occupant
+    desiredOwner = occupant and Players:GetPlayerFromCharacter(occupant.Parent) or nil
+  end
+  if desiredOwner == entry.networkOwner then return end
+  for _, descendant in ipairs(entry.model:GetDescendants()) do
+    if descendant:IsA("BasePart") then
+      pcall(function() descendant:SetNetworkOwner(desiredOwner) end)
+    end
+  end
+  entry.networkOwner = desiredOwner
+end
+
+function ShipRegistry:UpdateOwnership()
+  for _, entry in pairs(self.ships) do
+    if entry.model.Parent then self:_ApplyOwnership(entry) end
+  end
 end
 
 function ShipRegistry:Register(instance: Instance): boolean
@@ -52,7 +75,7 @@ function ShipRegistry:Register(instance: Instance): boolean
   -- Attachments must live under a BasePart for WorldPosition; the folder is
   -- the schema marker while descendants are collected from the whole model.
   for _, child in ipairs(model:GetDescendants()) do
-    if child:IsA("Attachment") and child.Name ~= "RootAttachment" then
+    if child:IsA("Attachment") and child:GetAttribute("OceanBuoyancyPoint") == true then
       if not child.Parent or not child.Parent:IsA("BasePart") then
         warn("OceanShip rejected: buoyancy attachment must parent a BasePart " .. child:GetFullName())
         return false
@@ -65,14 +88,29 @@ function ShipRegistry:Register(instance: Instance): boolean
     return false
   end
   table.sort(points, function(a, b) return a.Name < b.Name end)
-  -- NPC/demo ships stay server-owned; player ships can opt into an explicit
-  -- client-ownership policy later after validation is wired.
-  for _, descendant in ipairs(model:GetDescendants()) do
-    if descendant:IsA("BasePart") then
-      pcall(function() descendant:SetNetworkOwner(nil) end)
+  local totalWeight = 0
+  for _, point in ipairs(points) do
+    local weight = point:GetAttribute("Weight")
+    if weight ~= nil and (type(weight) ~= "number" or weight <= 0 or weight ~= weight or weight == math.huge) then
+      warn("OceanShip rejected: invalid buoyancy weight " .. point:GetFullName())
+      return false
     end
+    totalWeight += weight or 1
   end
-  self.ships[model] = {model = model, root = root, points = points}
+  if totalWeight <= 0 or totalWeight ~= totalWeight then
+    warn("OceanShip rejected: buoyancy weights have no finite mass " .. model:GetFullName())
+    return false
+  end
+  for _, point in ipairs(points) do
+    point:SetAttribute("Weight", (point:GetAttribute("Weight") or 1) / totalWeight)
+  end
+  local policy = model:GetAttribute("OceanNetworkOwnership") or "Server"
+  if policy ~= "Driver" and policy ~= "Server" then
+    warn("OceanShip using Server ownership for invalid policy " .. model:GetFullName())
+    policy = "Server"
+  end
+  self.ships[model] = {model = model, root = root, points = points, policy = policy, networkOwner = nil}
+  self:_ApplyOwnership(self.ships[model])
   return true
 end
 

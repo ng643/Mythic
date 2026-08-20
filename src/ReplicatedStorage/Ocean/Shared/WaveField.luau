@@ -79,8 +79,24 @@ function WaveField:SampleWorldXZ(worldXZ: Vector2, serverTime: number, options: 
   return sample
 end
 
+function WaveField:GetGameplayComponentCap(): number
+  return math.max(#self.state.bankA, #self.state.bankB)
+end
+
+function WaveField:SampleForGameplayWorldXZ(worldXZ: Vector2, serverTime: number, options: OceanTypes.SampleOptions?): OceanTypes.WaveSample
+  local requestedIterations = options and options.inverseIterations or 3
+  local gameplayOptions: OceanTypes.SampleOptions = {
+    inverseIterations = math.max(requestedIterations, 3),
+    includeEvents = options == nil or options.includeEvents ~= false,
+    componentCap = self:GetGameplayComponentCap(),
+    zoneAmplitude = options and options.zoneAmplitude,
+    foamMultiplier = options and options.foamMultiplier,
+  }
+  return self:SampleWorldXZ(worldXZ, serverTime, gameplayOptions)
+end
+
 function WaveField:SampleHeight(worldXZ: Vector2, serverTime: number): number
-  return self:SampleWorldXZ(worldXZ, serverTime, {inverseIterations = 2, componentCap = 10}).height
+  return self:SampleForGameplayWorldXZ(worldXZ, serverTime).height
 end
 
 function WaveField:SampleBatch(worldXZs: {Vector2}, serverTime: number, options: OceanTypes.SampleOptions?): {OceanTypes.WaveSample}

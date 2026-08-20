@@ -48,14 +48,24 @@ function SpectrumGenerator.Generate(preset: OceanTypes.OceanPreset, seed: number
   end
   local rng = makeRng(seed)
   local components: {OceanTypes.WaveComponent} = {}
-  local meterToStuds = Config.MetersToStuds
-  local peakWavelength = math.max(18, Config.WaveGravity * (preset.peakPeriodSeconds * meterToStuds) ^ 2 / TWO_PI)
+  local studsPerMeter = Config.MetersToStuds
+  -- Deep-water dispersion: wavelength = g * T² / (2π). T is already seconds;
+  -- convert the resulting length once by using WaveGravity in studs/s².
+  local peakWavelength = math.max(18, Config.WaveGravity * preset.peakPeriodSeconds ^ 2 / TWO_PI)
+  local minimumWavelength = 18
+  local maximumWavelength = math.max(720, peakWavelength * 3)
+  local swellWavelength = preset.swellHeightMeters > 0 and math.max(42, Config.WaveGravity * preset.swellPeriodSeconds ^ 2 / TWO_PI) or 0
   local rawEnergy = {}
   local rawSum = 0
 
   for i = 1, 10 do
-    local logOffset = (i - 5.5) / 3.2
-    local wavelength = math.clamp(peakWavelength * 2 ^ logOffset, 18, 720)
+    -- Include the exact spectral peak while retaining logarithmic coverage.
+    local logOffset = (i - 5) / 3.2
+    local wavelength = math.clamp(peakWavelength * 2 ^ logOffset, minimumWavelength, maximumWavelength)
+    -- Keep the exact swell wavelength unique when the logarithmic wind grid lands on it.
+    if swellWavelength > 0 and math.abs(wavelength - swellWavelength) / swellWavelength < 0.01 then
+      wavelength *= 0.93
+    end
     local ratio = wavelength / peakWavelength
     local logRatio = math.log(ratio)
     local broad = math.exp(-0.5 * (logRatio / 0.82) ^ 2)
@@ -65,7 +75,7 @@ function SpectrumGenerator.Generate(preset: OceanTypes.OceanPreset, seed: number
     rawSum += energy
   end
 
-  local targetHsStuds = preset.significantWaveHeightMeters * meterToStuds
+  local targetHsStuds = preset.significantWaveHeightMeters * studsPerMeter
   local targetM0 = (targetHsStuds * 0.25) ^ 2
   local amplitudeScale = math.sqrt((2 * targetM0) / math.max(rawSum, 1e-6))
   local windDirection = degreesToDirection(preset.windDirectionDegrees)
@@ -80,8 +90,7 @@ function SpectrumGenerator.Generate(preset: OceanTypes.OceanPreset, seed: number
   end
 
   if preset.swellHeightMeters > 0 then
-    local swellWavelength = math.max(42, Config.WaveGravity * (preset.swellPeriodSeconds * meterToStuds) ^ 2 / TWO_PI)
-    local swellAmplitude = preset.swellHeightMeters * meterToStuds * 0.5
+    local swellAmplitude = preset.swellHeightMeters * studsPerMeter * 0.5
     local swellDirection = degreesToDirection(preset.swellDirectionDegrees)
     for side = -1, 1, 2 do
       local direction = (swellDirection + Vector2.new(-swellDirection.Y, swellDirection.X) * (0.08 * side)).Unit
@@ -90,6 +99,16 @@ function SpectrumGenerator.Generate(preset: OceanTypes.OceanPreset, seed: number
       table.insert(components, component)
     end
   end
+
+  -- Order for capped LODs: required long waves first, then dominant energy.
+  -- Full gameplay/LOD0 sampling still uses every generated component.
+  table.sort(components, function(a, b)
+    local tierA = a.minRenderTier or 1
+    local tierB = b.minRenderTier or 1
+    if tierA ~= tierB then return tierA < tierB end
+    if a.wavelength ~= b.wavelength then return a.wavelength > b.wavelength end
+    return a.energy > b.energy
+  end)
 
   local aggregate = 0
   for _, component in ipairs(components) do
@@ -103,6 +122,35 @@ function SpectrumGenerator.Generate(preset: OceanTypes.OceanPreset, seed: number
 
   local _ = windDirection
   return components
+end
+
+function SpectrumGenerator.Summarize(components: {OceanTypes.WaveComponent}): {[string]: number}
+  local wavelengths = {}
+  local variance = 0
+  local steepness = 0
+  for _, component in ipairs(components) do
+    table.insert(wavelengths, component.wavelength)
+    variance += component.amplitude * component.amplitude * 0.5
+    steepness += component.waveNumber * math.abs(component.horizontalAmplitude)
+  end
+  table.sort(wavelengths)
+  local count = #wavelengths
+  local minimum = count > 0 and wavelengths[1] or 0
+  local maximum = count > 0 and wavelengths[count] or 0
+  local median = count > 0 and wavelengths[math.floor((count + 1) * 0.5)] or 0
+  local periodMinimum = minimum > 0 and math.sqrt(minimum * TWO_PI / Config.WaveGravity) or 0
+  local periodMaximum = maximum > 0 and math.sqrt(maximum * TWO_PI / Config.WaveGravity) or 0
+  return {
+    wavelengthMin = minimum,
+    wavelengthMedian = median,
+    wavelengthMax = maximum,
+    periodMin = periodMinimum,
+    periodMax = periodMaximum,
+    totalVariance = variance,
+    significantHeight = 4 * math.sqrt(math.max(variance, 0)),
+    aggregateSteepness = steepness,
+    componentCount = count,
+  }
 end
 
 function SpectrumGenerator.BuildState(preset: OceanTypes.OceanPreset, seed: number, epochServerTime: number): OceanTypes.OceanState

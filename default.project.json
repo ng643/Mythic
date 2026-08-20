@@ -13,6 +13,11 @@
         }
       }
     },
+    "MaterialService": {
+      "OceanWater": {
+        "$path": "src/MaterialService/OceanWater.model.json"
+      }
+    },
     "ServerScriptService": {
       "OceanServer": {
         "$path": "src/ServerScriptService/OceanServer"

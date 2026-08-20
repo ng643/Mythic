@@ -2,6 +2,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 local Config = require(ReplicatedStorage.Ocean.Shared.OceanConfig)
 local OceanTypes = require(ReplicatedStorage.Ocean.Shared.OceanTypes)
 local Presets = require(ReplicatedStorage.Ocean.Shared.OceanPresets)
@@ -23,11 +24,30 @@ function OceanStateService.new()
     presetName = preset.name,
     callbacks = {},
   }, OceanStateService)
+  if RunService:IsStudio() and ReplicatedStorage.Ocean:GetAttribute("OceanDebugSpectrum") == true then
+    local summary = SpectrumGenerator.Summarize(self.state.bankA)
+    print(string.format("OceanSpectrum | preset=%s components=%d wavelengths=%.1f/%.1f/%.1f periods=%.2f..%.2f variance=%.3f steepness=%.3f", preset.name, summary.componentCount, summary.wavelengthMin, summary.wavelengthMedian, summary.wavelengthMax, summary.periodMin, summary.periodMax, summary.totalVariance, summary.aggregateSteepness))
+  end
   return self
 end
 
+function OceanStateService:_PromoteDestination(serverTime: number, notify: boolean): boolean
+  if self.state.bankBlendDuration <= 0 then return false end
+  self.state.bankA = self.state.bankB
+  self.state.bankB = table.clone(self.state.bankA)
+  self.state.bankBlendStart = serverTime
+  self.state.bankBlendDuration = 0
+  self.state.bankBlendTarget = 0
+  if notify then self:_Changed() end
+  return true
+end
+
 function OceanStateService:GetState(): OceanTypes.OceanState
-  self:PruneExpiredEvents(now())
+  local serverTime = now()
+  if self.state.bankBlendDuration > 0 and serverTime >= self.state.bankBlendStart + self.state.bankBlendDuration then
+    self:_PromoteDestination(serverTime, true)
+  end
+  self:PruneExpiredEvents(serverTime)
   return self.state
 end
 
@@ -52,9 +72,18 @@ function OceanStateService:TransitionTo(presetName: string, duration: number?): 
     return false, "unknown preset: " .. presetName
   end
   local transitionDuration = math.clamp(duration or 30, 5, 120)
+  local transitionNow = now()
+  -- A new transition must start from the latest destination, never stale bankA.
+  if self.state.bankBlendDuration > 0 then
+    self:_PromoteDestination(transitionNow, false)
+  end
   local transitionSeed = self.state.seed + math.floor(now() * 1000) % 1000003
   self.state.bankB = SpectrumGenerator.Generate(preset, transitionSeed)
-  self.state.bankBlendStart = now()
+  if RunService:IsStudio() and ReplicatedStorage.Ocean:GetAttribute("OceanDebugSpectrum") == true then
+    local summary = SpectrumGenerator.Summarize(self.state.bankB)
+    print(string.format("OceanSpectrum | transition=%s components=%d wavelengths=%.1f/%.1f/%.1f periods=%.2f..%.2f variance=%.3f steepness=%.3f", preset.name, summary.componentCount, summary.wavelengthMin, summary.wavelengthMedian, summary.wavelengthMax, summary.periodMin, summary.periodMax, summary.totalVariance, summary.aggregateSteepness))
+  end
+  self.state.bankBlendStart = transitionNow
   self.state.bankBlendDuration = transitionDuration
   self.state.bankBlendTarget = 1
   self.state.waterColor = preset.waterColor
@@ -93,6 +122,9 @@ function OceanStateService:CancelEvent(id: string): boolean
 end
 
 function OceanStateService:PruneExpiredEvents(serverTime: number)
+  if self.state.bankBlendDuration > 0 and serverTime >= self.state.bankBlendStart + self.state.bankBlendDuration then
+    self:_PromoteDestination(serverTime, true)
+  end
   local changed = false
   for index = #self.state.disturbances, 1, -1 do
     local event = self.state.disturbances[index]

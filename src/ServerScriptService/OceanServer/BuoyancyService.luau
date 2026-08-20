@@ -44,7 +44,9 @@ end
 
 function BuoyancyService:_Step(dt: number)
   if not self.enabled then return end
+  debug.profilebegin("Ocean/Buoyancy")
   local serverTime = self.waveField:GetSynchronizedTime()
+  self.registry:UpdateOwnership()
   local sampleCount = 0
   for _, entry in ipairs(self.registry:GetEntries()) do
     local root = entry.root
@@ -55,7 +57,7 @@ function BuoyancyService:_Step(dt: number)
       local draft = math.max(entry.model:GetAttribute("EffectiveDraft") or 5, 0.5)
       for _, point in ipairs(entry.points) do
         local worldPosition = point.WorldPosition
-        local sample = self.waveField:SampleWorldXZ(Vector2.new(worldPosition.X, worldPosition.Z), serverTime, {inverseIterations = 2, componentCap = 10})
+        local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(worldPosition.X, worldPosition.Z), serverTime, {inverseIterations = 3})
         local weight = math.max(point:GetAttribute("Weight") or (1 / #entry.points), 0.001)
         local targetDepth = math.max(point:GetAttribute("TargetSubmersion") or draft * 0.55, 0.25)
         local depth = math.clamp(sample.height - worldPosition.Y, 0, draft)
@@ -72,12 +74,13 @@ function BuoyancyService:_Step(dt: number)
         sampleCount += 1
       end
       local velocity = root.AssemblyLinearVelocity
-      local localVelocity = root.CFrame:VectorToObjectSpace(velocity - self.waveField:SampleWorldXZ(Vector2.new(root.Position.X, root.Position.Z), serverTime, {componentCap = 8}).velocity)
+      local localVelocity = root.CFrame:VectorToObjectSpace(velocity - self.waveField:SampleForGameplayWorldXZ(Vector2.new(root.Position.X, root.Position.Z), serverTime).velocity)
       local drag = Vector3.new(-localVelocity.X * math.abs(localVelocity.X) * 0.08, -localVelocity.Y * math.abs(localVelocity.Y) * 0.18, -localVelocity.Z * math.abs(localVelocity.Z) * 0.9)
       root:ApplyImpulse(root.CFrame:VectorToWorldSpace(drag) * mass * math.clamp(dt, 0, 0.05))
     end
   end
   self.lastSamples = sampleCount
+  debug.profileend()
 end
 
 function BuoyancyService:Start()

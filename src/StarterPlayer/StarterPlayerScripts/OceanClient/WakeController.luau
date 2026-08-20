@@ -6,6 +6,39 @@ local RunService = game:GetService("RunService")
 local WakeController = {}
 WakeController.__index = WakeController
 
+local function setTrailTexture(trail: Trail)
+  pcall(function()
+    trail.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+  end)
+end
+
+local function makeTrail(holder: Part, firstOffset: Vector3, secondOffset: Vector3, name: string): Trail
+  local first = Instance.new("Attachment")
+  first.Name = name .. "_A"
+  first.Position = firstOffset
+  first.Parent = holder
+  local second = Instance.new("Attachment")
+  second.Name = name .. "_B"
+  second.Position = secondOffset
+  second.Parent = holder
+  local trail = Instance.new("Trail")
+  trail.Name = name
+  trail.Attachment0 = first
+  trail.Attachment1 = second
+  trail.Enabled = false
+  trail.Lifetime = 1.25
+  trail.MinLength = 0.2
+  trail.MaxLength = 80
+  trail.FaceCamera = true
+  trail.Color = ColorSequence.new(Color3.fromRGB(194, 231, 229))
+  trail.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.18), NumberSequenceKeypoint.new(0.75, 0.52), NumberSequenceKeypoint.new(1, 1)})
+  trail.WidthScale = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.2, 1), NumberSequenceKeypoint.new(1, 0.05)})
+  trail.LightEmission = 0.05
+  setTrailTexture(trail)
+  trail.Parent = holder
+  return trail
+end
+
 function WakeController.new(runtime)
   return setmetatable({runtime = runtime, tracks = {}, connection = nil, added = nil, removed = nil}, WakeController)
 end
@@ -14,29 +47,25 @@ function WakeController:_Track(model: Instance)
   if not model:IsA("Model") or self.tracks[model] then return end
   local root = model.PrimaryPart or model:FindFirstChild("HullRoot", true)
   if not root or not root:IsA("BasePart") then return end
-  local parts = {}
-  for index = 1, 2 do
-    local trail = Instance.new("Part")
-    trail.Name = string.format("WakeTrail_%d", index)
-    trail.Anchored = true
-    trail.CanCollide = false
-    trail.CanTouch = false
-    trail.CanQuery = false
-    trail.CastShadow = false
-    trail.Material = Enum.Material.Neon
-    trail.Color = Color3.fromRGB(190, 230, 232)
-    trail.Transparency = 1
-    trail.Size = Vector3.new(2, 0.03, 8)
-    trail.Parent = self.runtime
-    table.insert(parts, trail)
-  end
-  self.tracks[model] = {root = root, parts = parts}
+  local holder = Instance.new("Part")
+  holder.Name = "WakeSurfaceEmitter_" .. model.Name
+  holder.Anchored = true
+  holder.CanCollide = false
+  holder.CanTouch = false
+  holder.CanQuery = false
+  holder.CastShadow = false
+  holder.Transparency = 1
+  holder.Size = Vector3.new(0.1, 0.1, 0.1)
+  holder.Parent = self.runtime
+  local port = makeTrail(holder, Vector3.new(-2.4, -0.8, 4.5), Vector3.new(-0.1, -0.85, 10), "PortWake")
+  local starboard = makeTrail(holder, Vector3.new(2.4, -0.8, 4.5), Vector3.new(0.1, -0.85, 10), "StarboardWake")
+  self.tracks[model] = {root = root, holder = holder, trails = {port, starboard}}
 end
 
 function WakeController:_Untrack(model: Instance)
   local track = self.tracks[model]
   if not track then return end
-  for _, part in ipairs(track.parts) do part:Destroy() end
+  track.holder:Destroy()
   self.tracks[model] = nil
 end
 
@@ -46,7 +75,6 @@ function WakeController:Start()
     for _, model in ipairs(CollectionService:GetTagged("OceanShip")) do self:_Track(model) end
   end
   rescanTaggedShips()
-  -- Tags can replicate before the model's HullRoot; retry only during startup.
   task.spawn(function()
     for _ = 1, 12 do
       task.wait(0.25)
@@ -56,22 +84,25 @@ function WakeController:Start()
   self.added = CollectionService:GetInstanceAddedSignal("OceanShip"):Connect(function(model) self:_Track(model) end)
   self.removed = CollectionService:GetInstanceRemovedSignal("OceanShip"):Connect(function(model) self:_Untrack(model) end)
   self.connection = RunService.RenderStepped:Connect(function()
+    debug.profilebegin("Ocean/Wakes")
+    local enabled = self.runtime:GetAttribute("OceanDebugWakes") ~= false
     for model, track in pairs(self.tracks) do
       local root = track.root
-      if not root.Parent then
+      if not enabled then
+        for _, trail in ipairs(track.trails) do trail.Enabled = false end
+      elseif not root.Parent then
         self:_Untrack(model)
       else
-        local speed = root.AssemblyLinearVelocity.Magnitude
-        local alpha = math.clamp((speed - 2) / 35, 0, 1)
-        for index, trail in ipairs(track.parts) do
-          local side = index == 1 and -1 or 1
-          local localOffset = Vector3.new(side * 2.3, -1.0, 5 + alpha * 10)
-          trail.CFrame = root.CFrame * CFrame.new(localOffset) * CFrame.Angles(0, math.pi, 0)
-          trail.Size = Vector3.new(1.2 + alpha * 4, 0.03, 5 + alpha * 12)
-          trail.Transparency = 1 - alpha * 0.7
+        track.holder.CFrame = root.CFrame
+        local localVelocity = root.CFrame:VectorToObjectSpace(root.AssemblyLinearVelocity)
+        local forwardSpeed = math.max(0, -localVelocity.Z)
+        local alpha = math.clamp((forwardSpeed - 2) / 35, 0, 1)
+        for _, trail in ipairs(track.trails) do
+          trail.Enabled = alpha > 0.03
         end
       end
     end
+    debug.profileend()
   end)
 end
 

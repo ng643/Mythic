@@ -42,7 +42,7 @@ function SwimmingController:Start()
     local root = character and character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not root or not root:IsA("BasePart") then return end
     local now = self.waveField:GetSynchronizedTime()
-    local sample = self.waveField:SampleWorldXZ(Vector2.new(root.Position.X, root.Position.Z), now, {inverseIterations = 2, componentCap = 8})
+    local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(root.Position.X, root.Position.Z), now, {inverseIterations = 3})
     local submerged = root.Position.Y < sample.height - 0.45
     local force = self:_EnsureForce(root)
     if submerged then

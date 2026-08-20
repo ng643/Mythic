@@ -37,9 +37,11 @@ function UnderwaterController:Start()
   self.connection = RunService.RenderStepped:Connect(function()
     local camera = Workspace.CurrentCamera
     if not camera then return end
+    debug.profilebegin("Ocean/Underwater")
     local serverTime = self.waveField:GetSynchronizedTime()
-    local sample = self.waveField:SampleWorldXZ(Vector2.new(camera.CFrame.Position.X, camera.CFrame.Position.Z), serverTime, {inverseIterations = 2, componentCap = 8})
+    local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(camera.CFrame.Position.X, camera.CFrame.Position.Z), serverTime, {inverseIterations = 3})
     local y = camera.CFrame.Position.Y
+    debug.profileend()
     local nextUnderwater = self.underwater and y < sample.height + 0.55 or y < sample.height - 0.35
     self:_SetUnderwater(nextUnderwater, serverTime)
   end)

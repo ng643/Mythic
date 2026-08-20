@@ -1,0 +1,10 @@
+{
+  "$className": "Configuration",
+  "$attributes": {
+    "ColorMap": "rbxassetid://128922037556159",
+    "NormalMap": "rbxassetid://101286961773967",
+    "RoughnessMap": "rbxassetid://111100454366205",
+    "MetalnessMap": "rbxassetid://126230944196062",
+    "MaterialVariant": "OceanWater"
+  }
+}
