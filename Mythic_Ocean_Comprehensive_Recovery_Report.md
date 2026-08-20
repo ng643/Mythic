@@ -103,7 +103,7 @@ The active baseline ColorMap asset was inspected as a high-contrast photo-like b
   - Removes custom UV creation and all per-vertex SetUV recenter calls; the active MaterialVariant path uses projection/StudsPerTile.
   - Uses explicit profile ring resolutions/extents and a 31x31 High L0 with progressively smaller/coarser rings.
   - Uses a bounded eight-sector transition annulus outside the final moving ring.
-  - Extends High moving-wave influence to a 1,920-stud half-extent before static horizon coverage.
+  - Extends High macro-wave influence to an approximately 1,152-stud half-extent before static horizon coverage; dominant 400-675 stud waves remain traceable across multiple cycles.
   - Rebases the complete moving/transition set on a 32-stud anchor and forces a full commit on rebase; camera movement within an anchor does not move stale geometry.
   - Morphs six shared long components C1-continuously to mean sea level/up normal across the transition.
   - Uses synchronized shared-edge commits and boundary-only updates for lower-cadence rings.
