@@ -40,6 +40,14 @@ end
 local function worldUV(worldXZ: Vector2): Vector2
   return Vector2.new(worldXZ.X / UV_TILE_SCALE, worldXZ.Y / UV_TILE_SCALE)
 end
+local function materialVariantName(): string
+  local ocean = ReplicatedStorage:FindFirstChild("Ocean")
+  local assets = ocean and ocean:FindFirstChild("Assets")
+  local appearances = assets and assets:FindFirstChild("WaterAppearances")
+  local slot = appearances and appearances:FindFirstChild("OceanWaterPBR")
+  local value = slot and slot:GetAttribute("MaterialVariant")
+  return type(value) == "string" and value or ""
+end
 
 
 
@@ -71,14 +79,6 @@ end
 
 local function isFinite(value: number): boolean
   return value == value and value > -math.huge and value < math.huge
-end
-local function materialVariantName(): string
-  local ocean = ReplicatedStorage:FindFirstChild("Ocean")
-  local assets = ocean and ocean:FindFirstChild("Assets")
-  local appearances = assets and assets:FindFirstChild("WaterAppearances")
-  local slot = appearances and appearances:FindFirstChild("OceanWaterPBR")
-  local value = slot and slot:GetAttribute("MaterialVariant")
-  return type(value) == "string" and value or ""
 end
 
 local function isFiniteVector3(value: Vector3): boolean
