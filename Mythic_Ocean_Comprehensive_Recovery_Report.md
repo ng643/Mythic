@@ -5,7 +5,7 @@ Status: implementation complete for the reachable code and Edit-DataModel checks
 ## Repository and place
 
 - Audited baseline: `064480becf992afa7662b31a5995f1fedc34bade`.
-- Current repository commit: `2e622109c564d5ea028ef625fdb4b523d79e339e` (`Improve boat buoyancy shading and wave LOD`).
+- Current repository commit: `bf694b6` (`Pivot ocean to coherent Gerstner macro surface`).
 - Branch: `main`, synchronized with `origin/main`.
 - Place: Mythic, place ID `89252995862215`.
 - Studio: `0.735.0.7351131`, AMD Radeon 880M, Vulkan, 32 GB host memory, 2880-wide Studio viewport.
@@ -45,7 +45,13 @@ The inspected live raft before repair had a 24x2x10 stud HullRoot, EffectiveDraf
 
 The active baseline ColorMap asset was inspected as a high-contrast photo-like blue/bubbly map and rejected. The generated foam disk and spray oval assets were also rejected. A new Studio-generated neutral water set is now promoted: ColorMap `114485532047931`, NormalMap `122673814251163`, RoughnessMap `84568670031055`, MetalnessMap `90459269207438`, Regular projection at 48 studs per tile. These generated thumbnails were still moderation-pending during the Edit inspection.
 
-## Implemented changes
+## Gerstner addendum pivot
+
+- Production spectrum is now five components for ordinary presets and six for rough/storm presets: two swells, exact peak wind, two separated wind components, and an optional cross-sea component.
+- Directions are normalized; Hs reconstruction error is zero in the macro regression; target aggregate steepness is approximately 0.218 Glass, 0.261 Calm, 0.352 Trade, 0.424 Gale, and 0.480 Mythic Storm.
+- A 49x49 High near patch at 8-stud spacing covers 384 studs continuously. Medium is 41x41 at 10 studs; Low is 33x33 at 12 studs.
+- The Studio-only `OceanReferenceHarness` exposes `Reference Geometry`, `Candidate Production`, and `Current Main` modes through `_G.OceanReferenceHarness`, plus normals/grid/LOD/crest/compression debug attributes and Glass/PBR material candidates.
+- Current EditableMesh color APIs (`AddColor`, `SetFaceColors`, `SetColor`) are used for a three-stop trough/mid/crest ramp. Color commits are cadence-limited to 12 Hz.
 
 ### Stability and gameplay
 
@@ -154,12 +160,12 @@ WaterMaterialController, ShorelineController
 - `passed=true`
 - Trade peak error: 0 studs at expected 402.923 studs
 - Trade swell error: 0 studs at expected 674.791 studs
-- Distinct wavelengths: 14
-- Max inverse residual: 0.000488 studs
+- Distinct wavelengths: 5 ordinary / 6 storm
+- Max inverse residual: 0.00336 studs
 - Max normal magnitude error: 5.96e-8
-- Render/gameplay agreement: 0
-- Trough foam maximum: 0.159
-- Positive minimum Jacobian: 0.688
+- Trough foam maximum: 0.0028
+- Positive minimum Jacobian: 0.621
+- Macro aggregate steepness maximum: 0.480
 
 Render evaluator equivalence against WaveMath passed with maximum position error below 0.0001 stud and maximum normal disagreement 0.028 degrees.
 
@@ -167,20 +173,18 @@ Final Edit-built High topology:
 
 | Component | Vertices | Triangles |
 |---|---:|---:|
-| Moving rings | 2,187 | 3,720 |
-| Transition sectors | 576 | 864 |
-| Total dynamic geometry | 2,763 | 4,584 |
-| Static horizon Parts | 40 | n/a |
+| Moving near patch | 2,403 | 4,608 |
+| Transition sectors | 720 | 1,120 |
+| Total dynamic geometry | 3,123 | 5,728 |
+| Static horizon Parts | 45 | n/a |
 
 Edit committed-boundary and recenter checks passed:
 
-- Near-ring seam position error: 0 studs.
-- Near-ring seam normal error: 0.0198 degrees.
-- Moving/transition shared sample position error: 0 studs.
-- Moving/transition shared sample normal error: 0 degrees.
-- Transition outer boundary height error: 0 studs.
-- Transition outer boundary normal error: 0 degrees.
-- Camera movement within the 32-stud anchor causes zero mesh shift; crossing the anchor forces a full synchronized commit.
+- The single near patch has no internal LOD seam.
+- Moving/transition shared sample position and normal checks remain zero in the equivalent Edit harness.
+- Transition outer boundary height and normal are flat at the mean sea level boundary.
+- Camera movement within the anchor produces zero mesh shift; crossing the anchor forces a full synchronized commit.
+- Vertex color API smoke test passes with `colorAvailable=true` and no `SetFaceColors`/`SetColor` error.
 - Renderer fallback: false.
 
 Smoke probes passed for ship registry registration, VFX controller construction, shared sample cache hits, and idempotent swim-force deactivation (`Enabled=false`, `Force=0,0,0`, state `Dry`).
