@@ -67,12 +67,22 @@ publishAttributes()
 
 -- Keep expiry and attribute state maintenance off the render path.
 local accumulator = 0
+local debugAccumulator = 0
 RunService.Heartbeat:Connect(function(dt)
   accumulator += dt
+  debugAccumulator += dt
   if accumulator >= 0.5 then
     accumulator = 0
     stateService:PruneExpiredEvents(workspace:GetServerTimeNow())
     publishAttributes()
+  end
+  if debugAccumulator >= 1 and ocean:GetAttribute("OceanDebugMetrics") == true then
+    debugAccumulator = 0
+    local diagnostics = buoyancyService:GetDiagnostics()
+    ocean:SetAttribute("OceanServerBuoyancyMs", diagnostics.lastStepMs)
+    ocean:SetAttribute("OceanServerBuoyancySamples", diagnostics.lastSamples)
+    ocean:SetAttribute("OceanServerForceMagnitude", diagnostics.totalForce.Magnitude)
+    ocean:SetAttribute("OceanServerTorqueMagnitude", diagnostics.totalTorque.Magnitude)
   end
 end)
 

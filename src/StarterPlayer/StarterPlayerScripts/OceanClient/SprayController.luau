@@ -6,7 +6,7 @@ local Workspace = game:GetService("Workspace")
 local SprayController = {}
 SprayController.__index = SprayController
 
-local SPRAY_TEXTURE = "rbxassetid://138338217463878"
+local SPRAY_TEXTURE = "rbxasset://textures/particles/sparkles_main.dds"
 local CELL_SIZE = 28
 local TICK_RATE = 1 / 7
 local MAX_DISTANCE = 240

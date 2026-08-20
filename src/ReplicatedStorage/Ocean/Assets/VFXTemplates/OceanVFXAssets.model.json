@@ -1,11 +1,13 @@
 {
   "$className": "Configuration",
   "$attributes": {
-    "FoamTexture": "rbxassetid://140229416139720",
-    "SprayTexture": "rbxassetid://138338217463878",
-    "WakeTexture": "rbxassetid://140229416139720",
-    "TextureWorkflow": "Generated locally, uploaded through Studio MCP",
-    "TextureAlpha": "Premultiplied transparent RGBA",
-    "TextureOwnership": "Experience-owned asset IDs"
+    "FoamTexture": "rbxasset://textures/particles/smoke_main.dds",
+    "SprayTexture": "rbxasset://textures/particles/sparkles_main.dds",
+    "WakeTexture": "rbxasset://textures/particles/smoke_main.dds",
+    "RejectedFoamAsset": "rbxassetid://140229416139720",
+    "RejectedSprayAsset": "rbxassetid://138338217463878",
+    "TextureWorkflow": "Studio pixel inspection rejected disk/oval generated maps; Roblox built-in alpha textures used as fallback",
+    "TextureAlpha": "Built-in alpha RGBA",
+    "TextureOwnership": "Roblox built-in content; no marketplace dependency"
   }
 }

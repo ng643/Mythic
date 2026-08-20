@@ -3,12 +3,12 @@
 local RenderEvaluator = {}
 local TWO_PI = math.pi * 2
 
-local function safeUnit(x: number, y: number, z: number): Vector3
+local function safeUnitComponents(x: number, y: number, z: number): (number, number, number)
   local magnitude = math.sqrt(x * x + y * y + z * z)
   if magnitude < 1e-5 or magnitude ~= magnitude then
-    return Vector3.yAxis
+    return 0, 1, 0
   end
-  return Vector3.new(x / magnitude, y / magnitude, z / magnitude)
+  return x / magnitude, y / magnitude, z / magnitude
 end
 
 function RenderEvaluator.Prepare(components, serverTime: number, componentCap: number)
@@ -69,7 +69,28 @@ local function evaluatePlan(baseX: number, baseZ: number, seaLevel: number, plan
   local normalX = tangentZY * tangentXZ - tangentZZ * tangentXY
   local normalY = tangentZZ * tangentXX - tangentZX * tangentXZ
   local normalZ = tangentZX * tangentXY - tangentZY * tangentXX
-  return positionX, positionY, positionZ, safeUnit(normalX, normalY, normalZ)
+  local unitX, unitY, unitZ = safeUnitComponents(normalX, normalY, normalZ)
+  return positionX, positionY, positionZ, unitX, unitY, unitZ
+end
+
+function RenderEvaluator.EvaluateScalars(
+  baseX: number,
+  baseZ: number,
+  seaLevel: number,
+  planA,
+  planB,
+  blendAlpha: number,
+  sharedCount: number,
+  residualWeight: number
+): (number, number, number, number, number, number)
+  local ax, ay, az, anx, any, anz = evaluatePlan(baseX, baseZ, seaLevel, planA, residualWeight, sharedCount)
+  if blendAlpha <= 0 or planB == nil then
+    return ax, ay, az, anx, any, anz
+  end
+  local bx, by, bz, bnx, bny, bnz = evaluatePlan(baseX, baseZ, seaLevel, planB, residualWeight, sharedCount)
+  local t = math.clamp(blendAlpha, 0, 1)
+  local nx, ny, nz = safeUnitComponents(anx + (bnx - anx) * t, any + (bny - any) * t, anz + (bnz - anz) * t)
+  return ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t, nx, ny, nz
 end
 
 function RenderEvaluator.Evaluate(
@@ -82,13 +103,8 @@ function RenderEvaluator.Evaluate(
   sharedCount: number,
   residualWeight: number
 ): (Vector3, Vector3)
-  local ax, ay, az, anormal = evaluatePlan(baseX, baseZ, seaLevel, planA, residualWeight, sharedCount)
-  if blendAlpha <= 0 or planB == nil then
-    return Vector3.new(ax, ay, az), anormal
-  end
-  local bx, by, bz, bnormal = evaluatePlan(baseX, baseZ, seaLevel, planB, residualWeight, sharedCount)
-  local t = math.clamp(blendAlpha, 0, 1)
-  return Vector3.new(ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t), anormal:Lerp(bnormal, t).Unit
+  local x, y, z, nx, ny, nz = RenderEvaluator.EvaluateScalars(baseX, baseZ, seaLevel, planA, planB, blendAlpha, sharedCount, residualWeight)
+  return Vector3.new(x, y, z), Vector3.new(nx, ny, nz)
 end
 
 return RenderEvaluator

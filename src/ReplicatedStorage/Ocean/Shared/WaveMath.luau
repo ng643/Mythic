@@ -106,9 +106,11 @@ local function deriveFoamSignals(
       + crestMotion * Config.FoamMotionWeight
   )
   local foamGate = saturate(crestEligibility * (0.82 + foamIntensity * 0.18) + persistence * 0.12)
+  local crestHeightGate = saturate(crestFactor * 4 + upwardMotion * 0.025)
   local foam = saturate(
-    (foamCore * foamGate + persistence * Config.FoamPersistenceWeight)
-      * (0.35 + foamIntensity * 0.9)
+    ((foamCore * foamGate + persistence * Config.FoamPersistenceWeight)
+      * (0.35 + foamIntensity * 0.9))
+      * crestHeightGate
   )
   return crestHeight, crestMotion, slope, compression, persistence, foamIntensity, foam
 end

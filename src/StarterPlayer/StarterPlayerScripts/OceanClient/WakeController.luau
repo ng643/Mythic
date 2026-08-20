@@ -7,7 +7,7 @@ local Workspace = game:GetService("Workspace")
 local WakeController = {}
 WakeController.__index = WakeController
 
-local WAKE_TEXTURE = "rbxassetid://140229416139720"
+local WAKE_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 local UPDATE_INTERVAL = 1 / 18
 local TELEPORT_DISTANCE = 100
 

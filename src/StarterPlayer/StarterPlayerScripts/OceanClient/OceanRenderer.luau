@@ -345,7 +345,9 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     outerExtent = outerHalf * spacing,
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
+    boundaryAccumulator = 0,
     cadence = 1 / 30,
+    boundaryCadence = 1 / 30,
     componentCap = 6,
     sharedComponentCap = 6,
     updateNormals = true,
@@ -358,6 +360,15 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
   for index = 1, #vertices do
     ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
     ring.normalValues[index] = Vector3.yAxis
+  end
+  ring.boundaryIndices = {}
+  local boundaryTolerance = spacing * 0.51
+  for index = 1, #vertices do
+    local edge = math.max(math.abs(labelsX[index]), math.abs(labelsZ[index]))
+    if math.abs(edge - ring.outerExtent) <= boundaryTolerance
+      or (ring.innerExtent > 0 and math.abs(edge - ring.innerExtent) <= boundaryTolerance) then
+      table.insert(ring.boundaryIndices, index)
+    end
   end
   return ring
 end
@@ -444,7 +455,9 @@ function OceanRenderer:_BuildRectMesh(
     outerExtent = self.transitionOuterExtent,
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
+    boundaryAccumulator = 0,
     cadence = 1 / 10,
+    boundaryCadence = 1 / 30,
     componentCap = 6,
     sharedComponentCap = 6,
     updateNormals = true,
@@ -457,6 +470,15 @@ function OceanRenderer:_BuildRectMesh(
   for index = 1, #vertices do
     ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
     ring.normalValues[index] = Vector3.yAxis
+  end
+  ring.boundaryIndices = {}
+  local boundaryTolerance = spacing * 0.51
+  for index = 1, #vertices do
+    local edge = math.max(math.abs(labelsX[index]), math.abs(labelsZ[index]))
+    if math.abs(edge - ring.outerExtent) <= boundaryTolerance
+      or math.abs(edge - ring.innerExtent) <= boundaryTolerance then
+      table.insert(ring.boundaryIndices, index)
+    end
   end
   return ring
 end
@@ -591,8 +613,8 @@ function OceanRenderer:_AssignTopologyCaps()
   local fullCap = self.waveField:GetGameplayComponentCap()
   for index, ring in ipairs(self.rings) do
     ring.componentCap = index == 1 and fullCap or math.min(self.profile.waveCap, fullCap)
-    ring.cadence = 1 / math.max(self.profile.nearCadence, 5)
-    ring.updateNormals = index - 1 < self.profile.normalRings
+    ring.cadence = 1 / math.max(self.profile.nearCadence / 2 ^ (index - 1), 5)
+    ring.boundaryCadence = 1 / math.max(self.profile.nearCadence, 5)
   end
   for index, ring in ipairs(self.rings) do
     ring.sharedComponentCap = index < #self.rings and self.rings[index + 1].componentCap or math.min(6, fullCap)
@@ -600,8 +622,8 @@ function OceanRenderer:_AssignTopologyCaps()
   for _, transition in ipairs(self.transitions or {}) do
     transition.componentCap = math.min(self.profile.transitionWaveCap or 6, fullCap)
     transition.sharedComponentCap = transition.componentCap
-    transition.cadence = 1 / math.max(self.profile.nearCadence, 5)
-    transition.updateNormals = true
+    transition.cadence = self.profile.transitionCadence or 0.12
+    transition.boundaryCadence = 1 / math.max(self.profile.nearCadence, 5)
   end
   if self.rings[#self.rings] then self.rings[#self.rings].updateNormals = true end
 end
@@ -670,7 +692,7 @@ function OceanRenderer:_Build()
   self:_PublishStats()
 end
 
-function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number)
+function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number, boundaryOnly: boolean?)
   if ring.frozen then return end
   if ring.origin ~= anchor then
     ring.origin = anchor
@@ -679,7 +701,10 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
 
   local startEval = os.clock()
   local sharedCount = math.min(ring.sharedComponentCap, ring.componentCap)
-  for index = 1, #ring.vertices do
+  local updateIndices = boundaryOnly and ring.boundaryIndices or nil
+  local updateCount = updateIndices and #updateIndices or #ring.vertices
+  for sequence = 1, updateCount do
+    local index = updateIndices and updateIndices[sequence] or sequence
     local x = anchor.X + ring.labelsX[index]
     local z = anchor.Y + ring.labelsZ[index]
     local residualWeight = 1
@@ -691,7 +716,7 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
       local edge = math.max(math.abs(ring.labelsX[index]), math.abs(ring.labelsZ[index])) / math.max(ring.outerExtent, 1)
       residualWeight = edge > 0.62 and 1 - smoothstep((edge - 0.62) / 0.38) or 1
     end
-    local evaluated, normal = RenderEvaluator.Evaluate(
+    local px, py, pz, nx, ny, nz = RenderEvaluator.EvaluateScalars(
       x,
       z,
       seaLevel,
@@ -701,19 +726,22 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
       sharedCount,
       residualWeight
     )
-    local base = Vector3.new(x, seaLevel, z)
-    local displacement = evaluated - base
     if ring.kind == "transition" then
-      displacement *= residualWeight
-      normal = normal:Lerp(Vector3.yAxis, 1 - residualWeight).Unit
+      px = x + (px - x) * residualWeight
+      py = seaLevel + (py - seaLevel) * residualWeight
+      pz = z + (pz - z) * residualWeight
+      local normal = Vector3.new(nx, ny, nz):Lerp(Vector3.yAxis, 1 - residualWeight).Unit
+      nx, ny, nz = normal.X, normal.Y, normal.Z
     end
+    local displacement = Vector3.new(px - x, py - seaLevel, pz - z)
+    local normal = Vector3.new(nx, ny, nz)
     if not finiteVector(displacement) or displacement.Magnitude > MAX_VERTICAL_BOUNDS * 2 or not finiteVector(normal) then
       ring.failureCount += 1
       self.stats.ringFailureCount += 1
       if ring.failureCount >= 3 then ring.frozen = true end
       return
     end
-    ring.positions[index] = Vector3.new(ring.labelsX[index], 0, ring.labelsZ[index]) + displacement
+    ring.positions[index] = Vector3.new(ring.labelsX[index] + displacement.X, displacement.Y, ring.labelsZ[index] + displacement.Z)
     if ring.updateNormals then ring.normalValues[index] = normal end
   end
   self.stats.lastWaveEvaluateMs += (os.clock() - startEval) * 1000
@@ -721,8 +749,9 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
   local startCommit = os.clock()
   debug.profilebegin("Ocean/VertexCommit")
   local commitOk, commitReason = pcall(function()
-    for index, vertexId in ipairs(ring.vertices) do
-      ring.mesh:SetPosition(vertexId, ring.positions[index])
+    for sequence = 1, updateCount do
+      local index = updateIndices and updateIndices[sequence] or sequence
+      ring.mesh:SetPosition(ring.vertices[index], ring.positions[index])
     end
   end)
   debug.profileend()
@@ -739,8 +768,9 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
     local startNormals = os.clock()
     debug.profilebegin("Ocean/Normals")
     local normalOk, normalReason = pcall(function()
-      for index, normalId in ipairs(ring.normals) do
-        ring.mesh:SetNormal(normalId, ring.normalValues[index])
+      for sequence = 1, updateCount do
+        local index = updateIndices and updateIndices[sequence] or sequence
+        ring.mesh:SetNormal(ring.normals[index], ring.normalValues[index])
       end
     end)
     debug.profileend()
@@ -874,16 +904,26 @@ function OceanRenderer:_Update(dt: number)
   end
   for _, ring in ipairs(self.rings) do
     ring.accumulator += dt
+    ring.boundaryAccumulator += dt
     if ring.accumulator >= ring.cadence then
       ring.accumulator %= ring.cadence
-      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel)
+      ring.boundaryAccumulator = 0
+      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false)
+    elseif ring.boundaryAccumulator >= ring.boundaryCadence then
+      ring.boundaryAccumulator %= ring.boundaryCadence
+      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true)
     end
   end
   for _, transition in ipairs(self.transitions or {}) do
     transition.accumulator += dt
+    transition.boundaryAccumulator += dt
     if transition.accumulator >= transition.cadence then
       transition.accumulator %= transition.cadence
-      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel)
+      transition.boundaryAccumulator = 0
+      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, false)
+    elseif transition.boundaryAccumulator >= transition.boundaryCadence then
+      transition.boundaryAccumulator %= transition.boundaryCadence
+      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel, true)
     end
   end
   self.seamTimer += dt

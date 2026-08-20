@@ -44,7 +44,7 @@ function ShorelineController:_Build()
           emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.35, 1.1), NumberSequenceKeypoint.new(1, 0.1)})
           emitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.75, 0.5), NumberSequenceKeypoint.new(1, 1)})
           emitter.Color = ColorSequence.new(Color3.fromRGB(220, 245, 242))
-          emitter.Texture = "rbxassetid://140229416139720"
+          emitter.Texture = "rbxasset://textures/particles/smoke_main.dds"
           emitter.Parent = attachment
           table.insert(self.emitters, {anchor = anchor, point = point, emitter = emitter, lastEmit = -math.huge})
         end

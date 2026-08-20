@@ -6,7 +6,7 @@ local Workspace = game:GetService("Workspace")
 local FoamController = {}
 FoamController.__index = FoamController
 
-local FOAM_TEXTURE = "rbxassetid://140229416139720"
+local FOAM_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 local CELL_SIZE = 24
 local TICK_RATE = 1 / 8
 local MAX_DISTANCE = 280
