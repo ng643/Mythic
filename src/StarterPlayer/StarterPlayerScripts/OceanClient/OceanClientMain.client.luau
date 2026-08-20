@@ -64,7 +64,6 @@ local BuoyancyVisualizer = require(clientFolder.BuoyancyVisualizer)
 local ShorelineController = require(clientFolder.ShorelineController)
 
 clearCapabilityLab(runtime)
-collectgarbage("collect")
 hidePlaceholderBaseplate()
 runtime:SetAttribute("OceanClientStatus", "starting")
 runtime:SetAttribute("OceanClientError", nil)
