@@ -4,13 +4,7 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "Ocean": {
-        "$path": "src/ReplicatedStorage/Ocean",
-        "Assets": {
-          "$className": "Folder",
-          "MeshTemplates": { "$className": "Folder" },
-          "WaterAppearances": { "$className": "Folder" },
-          "VFXTemplates": { "$className": "Folder" }
-        }
+        "$path": "src/ReplicatedStorage/Ocean"
       }
     },
     "MaterialService": {

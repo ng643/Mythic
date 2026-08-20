@@ -2,10 +2,11 @@
   "$className": "MaterialVariant",
   "$properties": {
     "BaseMaterial": "SmoothPlastic",
-    "ColorMap": "rbxassetid://128922037556159",
-    "NormalMap": "rbxassetid://101286961773967",
-    "RoughnessMap": "rbxassetid://111100454366205",
-    "MetalnessMap": "rbxassetid://126230944196062",
+    "ColorMap": "rbxassetid://100340564254333",
+    "NormalMap": "rbxassetid://130080234654600",
+    "RoughnessMap": "rbxassetid://96754332370971",
+    "MetalnessMap": "rbxassetid://75597455436930",
+    "MaterialPattern": "Organic",
     "StudsPerTile": 10
   }
 }
