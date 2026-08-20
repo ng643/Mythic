@@ -158,6 +158,23 @@ function OceanRenderer:_BuildRing(level: number)
   for _, component in ipairs(state.bankA) do componentBound += math.abs(component.amplitude) end
   for _, component in ipairs(state.bankB) do componentBound = math.max(componentBound, math.abs(component.amplitude)) end
   verticalBound = math.clamp(math.max(verticalBound, componentBound * 2 + 8), 16, 96)
+  local function addSkirtEdge(i1: number, j1: number, i2: number, j2: number)
+    local upperA = getVertex(i1, j1)
+    local upperB = getVertex(i2, j2)
+    local lowerA = mesh:AddVertex(Vector3.new(i1 * spacing, -verticalBound, j1 * spacing))
+    local lowerB = mesh:AddVertex(Vector3.new(i2 * spacing, -verticalBound, j2 * spacing))
+    mesh:AddTriangle(vertices[upperA], vertices[upperB], lowerA)
+    mesh:AddTriangle(vertices[upperB], lowerB, lowerA)
+    triangleCount += 2
+  end
+  local function addSkirtLoop(minIndex: number, maxIndex: number)
+    for i = minIndex, maxIndex - 1 do addSkirtEdge(i, minIndex, i + 1, minIndex) end
+    for j = minIndex, maxIndex - 1 do addSkirtEdge(maxIndex, j, maxIndex, j + 1) end
+    for i = maxIndex, minIndex + 1, -1 do addSkirtEdge(i, maxIndex, i - 1, maxIndex) end
+    for j = maxIndex, minIndex + 1, -1 do addSkirtEdge(minIndex, j, minIndex, j - 1) end
+  end
+  addSkirtLoop(-outerHalf, outerHalf)
+  if level > 0 then addSkirtLoop(-innerHalf, innerHalf) end
   mesh:AddVertex(Vector3.new(0, -verticalBound, 0))
   mesh:AddVertex(Vector3.new(0, verticalBound, 0))
   local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
