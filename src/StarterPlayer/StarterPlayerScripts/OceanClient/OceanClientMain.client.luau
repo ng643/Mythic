@@ -28,13 +28,24 @@ local function clearCapabilityLab(runtime: Folder)
   end
 end
 
+local runtime = Workspace:FindFirstChild("OceanRuntime") :: Folder?
+if not runtime then
+  runtime = Instance.new("Folder")
+  runtime.Name = "OceanRuntime"
+  runtime.Parent = Workspace
+end
+runtime:SetAttribute("OceanClientStatus", "starting")
+
 local getOceanState = remotes:WaitForChild("GetOceanState") :: RemoteFunction
 local stateChanged = remotes:WaitForChild("OceanStateChanged") :: RemoteEvent
 local ok, initialState = pcall(function()
   return getOceanState:InvokeServer()
 end)
 if not ok or type(initialState) ~= "table" then
-  warn("OceanClient | state request failed: " .. tostring(initialState))
+  local message = "State: " .. tostring(initialState)
+  runtime:SetAttribute("OceanClientStatus", "error")
+  runtime:SetAttribute("OceanClientError", message)
+  warn("OceanClient | startup failed | " .. message)
   return
 end
 
@@ -52,90 +63,141 @@ local SwimmingController = require(clientFolder.SwimmingController)
 local BuoyancyVisualizer = require(clientFolder.BuoyancyVisualizer)
 local ShorelineController = require(clientFolder.ShorelineController)
 
-local runtime = Workspace:FindFirstChild("OceanRuntime") :: Folder?
-if not runtime then
-  runtime = Instance.new("Folder")
-  runtime.Name = "OceanRuntime"
-  runtime.Parent = Workspace
-end
 clearCapabilityLab(runtime)
 hidePlaceholderBaseplate()
+runtime:SetAttribute("OceanClientStatus", "starting")
+runtime:SetAttribute("OceanClientError", nil)
 runtime:SetAttribute("OceanAdaptiveQuality", true)
 if runtime:GetAttribute("OceanExperimentalClipmaps") == nil then
   runtime:SetAttribute("OceanExperimentalClipmaps", true)
 end
-for _, debugName in ipairs({"OceanDebugBaseWater", "OceanDebugFoam", "OceanDebugSpray", "OceanDebugWakes", "OceanDebugBuoyancy"}) do
-  if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, true) end
+local featureDefaults = {
+  OceanFoamEnabled = true,
+  OceanSprayEnabled = true,
+  OceanWakesEnabled = true,
+  OceanUnderwaterEnabled = true,
+  OceanSwimmingEnabled = true,
+  OceanShorelineEnabled = true,
+}
+for attribute, defaultValue in pairs(featureDefaults) do
+  if runtime:GetAttribute(attribute) == nil then runtime:SetAttribute(attribute, defaultValue) end
 end
-local requestedQuality = runtime:GetAttribute("OceanQuality") or "High"
+for _, debugName in ipairs({"OceanDebugBuoyancy", "OceanDebugSeams", "OceanDebugMetrics"}) do
+  if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, false) end
+end
+local requestedQuality = runtime:GetAttribute("OceanQualityOverride") or runtime:GetAttribute("OceanQuality") or "High"
 
 local clock = OceanClock.new(initialState.epochServerTime)
 local waveField = WaveField.new(initialState, clock)
 local renderer = OceanRenderer.new(waveField)
-renderer:SetQuality(requestedQuality)
-renderer:Start()
 local materialController = WaterMaterialController.new(runtime)
-materialController:Apply(initialState)
-materialController:Start()
 local qualityController = OceanQualityController.new(renderer, runtime)
-qualityController:Start()
-local qualityAttributeConnection = runtime:GetAttributeChangedSignal("OceanQuality"):Connect(applyVfxBudget)
-local underwaterController = UnderwaterController.new(waveField)
-underwaterController:Start()
+local underwaterController = UnderwaterController.new(waveField, runtime)
 local foamController = FoamController.new(waveField, runtime)
 local sprayController = SprayController.new(waveField, runtime)
+local wakeController = WakeController.new(runtime, waveField)
+local swimmingController = SwimmingController.new(waveField, runtime)
+local buoyancyVisualizer = BuoyancyVisualizer.new(waveField, runtime)
+local shorelineController = ShorelineController.new(waveField, runtime)
+local qualityAttributeConnection = nil
+local stateConnection = nil
+local startedStops = {}
+
+local function failStartup(subsystem: string, reason: any)
+  local message = string.format("%s: %s", subsystem, tostring(reason))
+  runtime:SetAttribute("OceanClientStatus", "error")
+  runtime:SetAttribute("OceanClientError", message)
+  warn("OceanClient | startup failed | " .. message)
+end
+
+local function startSubsystem(subsystem: string, startFn, stopFn): boolean
+  local started, reason = pcall(startFn)
+  if not started then
+    failStartup(subsystem, reason)
+    for index = #startedStops, 1, -1 do
+      pcall(startedStops[index])
+    end
+    return false
+  end
+  table.insert(startedStops, stopFn)
+  return true
+end
+
 local function applyVfxBudget()
   local profile = QualityProfiles.Get(runtime:GetAttribute("OceanQuality") or requestedQuality)
   foamController:SetCap(math.min(24, profile.foamCap))
   sprayController:SetCap(math.min(16, math.max(0, math.floor(profile.foamCap * 0.2))))
 end
-applyVfxBudget()
-foamController:Start()
-sprayController:Start()
-local wakeController = WakeController.new(runtime)
-wakeController:Start()
-local swimmingController = SwimmingController.new(waveField)
-swimmingController:Start()
-local buoyancyVisualizer = BuoyancyVisualizer.new(waveField, runtime)
-buoyancyVisualizer:Start()
-local shorelineController = ShorelineController.new(waveField, runtime)
-shorelineController:Start()
 
-local function applyDebugVisibility()
-  renderer:SetBaseVisible(runtime:GetAttribute("OceanDebugBaseWater") ~= false)
-end
-applyDebugVisibility()
-local debugConnections = {}
-for _, debugName in ipairs({"OceanDebugBaseWater"}) do
-  table.insert(debugConnections, runtime:GetAttributeChangedSignal(debugName):Connect(applyDebugVisibility))
+local startupSteps = {
+  {"Renderer", function() renderer:SetQuality(requestedQuality) renderer:Start() end, function() renderer:Stop() end},
+  {"Material", function() materialController:Apply(initialState) materialController:Start() end, function() materialController:Stop() end},
+  {"Quality", function() qualityController:Start() end, function() qualityController:Stop() end},
+  {"Underwater", function() underwaterController:Start() end, function() underwaterController:Stop() end},
+  {"Foam", function() applyVfxBudget() foamController:Start() end, function() foamController:Stop() end},
+  {"Spray", function() sprayController:Start() end, function() sprayController:Stop() end},
+  {"Wake", function() wakeController:Start() end, function() wakeController:Stop() end},
+  {"Swimming", function() swimmingController:Start() end, function() swimmingController:Stop() end},
+  {"BuoyancyVisualizer", function() buoyancyVisualizer:Start() end, function() buoyancyVisualizer:Stop() end},
+  {"Shoreline", function() shorelineController:Start() end, function() shorelineController:Stop() end},
+}
+for _, step in ipairs(startupSteps) do
+  if not startSubsystem(step[1], step[2], step[3]) then return end
 end
 
-stateChanged.OnClientEvent:Connect(function(nextState)
+local requiredSubsystems = {
+  Renderer = function() return renderer.running end,
+  Material = function() return materialController.connection ~= nil end,
+  Underwater = function() return underwaterController.connection ~= nil end,
+  Foam = function() return foamController.connection ~= nil end,
+  Spray = function() return sprayController.connection ~= nil end,
+  Wake = function() return wakeController.connection ~= nil end,
+  Swimming = function() return swimmingController.connection ~= nil end,
+  Shoreline = function() return shorelineController.connection ~= nil end,
+}
+for subsystem, check in pairs(requiredSubsystems) do
+  local checkOk, running = pcall(check)
+  if not checkOk or running ~= true then
+    failStartup("Smoke/" .. subsystem, checkOk and "not running" or running)
+    return
+  end
+  runtime:SetAttribute("OceanSubsystem_" .. subsystem, true)
+end
+
+qualityAttributeConnection = runtime:GetAttributeChangedSignal("OceanQuality"):Connect(applyVfxBudget)
+stateConnection = stateChanged.OnClientEvent:Connect(function(nextState)
   if type(nextState) == "table" then
     waveField:SetState(nextState)
     materialController:Apply(nextState)
   end
 end)
-
-runtime:SetAttribute("OceanClientStatus", "running")
 runtime:SetAttribute("OceanQuality", requestedQuality)
+runtime:SetAttribute("OceanClientStatus", "running")
+runtime:SetAttribute("OceanClientError", nil)
 script:SetAttribute("OceanClientRunning", true)
 task.spawn(function()
   while script.Parent do
     task.wait(1)
     local stats = renderer:GetStats()
     runtime:SetAttribute("OceanRingCount", stats.ringCount)
+    runtime:SetAttribute("OceanRequestedRingCount", stats.requestedRingCount)
+    runtime:SetAttribute("OceanHorizonTileCount", stats.horizonTileCount)
+    runtime:SetAttribute("OceanSeamMaxPositionError", stats.seamPositionError)
+    runtime:SetAttribute("OceanSeamMaxNormalError", stats.seamNormalError)
+    runtime:SetAttribute("OceanTopologyStatus", stats.topologyStatus)
     runtime:SetAttribute("OceanBatchAvailable", stats.batchAvailable)
     runtime:SetAttribute("OceanVertexCount", stats.vertexCount)
     runtime:SetAttribute("OceanTriangleCount", stats.triangleCount)
     runtime:SetAttribute("OceanFrameMs", stats.lastFrameMs)
     runtime:SetAttribute("OceanOceanMs", stats.lastOceanMs)
     runtime:SetAttribute("OceanUpdateMs", stats.lastUpdateMs)
+    runtime:SetAttribute("OceanUVUpdateMs", stats.lastUVUpdateMs)
     runtime:SetAttribute("OceanFallback", stats.fallback)
   end
 end)
-
 script.Destroying:Connect(function()
+  runtime:SetAttribute("OceanClientStatus", "stopped")
+  script:SetAttribute("OceanClientRunning", false)
   underwaterController:Stop()
   materialController:Stop()
   qualityController:Stop()
@@ -146,8 +208,8 @@ script.Destroying:Connect(function()
   buoyancyVisualizer:Stop()
   shorelineController:Stop()
   renderer:Stop()
-  qualityAttributeConnection:Disconnect()
-  for _, connection in ipairs(debugConnections) do connection:Disconnect() end
+  if qualityAttributeConnection then qualityAttributeConnection:Disconnect() end
+  if stateConnection then stateConnection:Disconnect() end
 end)
 
 print(string.format("OceanClient | running quality=%s rings=%d vertices=%d triangles=%d", tostring(requestedQuality), renderer:GetStats().ringCount, renderer:GetStats().vertexCount, renderer:GetStats().triangleCount))

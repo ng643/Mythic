@@ -6,25 +6,71 @@ local Config = {
   WaveGravity = 35.04,
   WorldGravity = 196.2,
   MetersToStuds = 1 / 0.28,
+  -- This is an aggregate target, not a per-component q value. Keeping the
+  -- generated bank well below one leaves a positive Gerstner mapping margin.
   MaxAggregateSteepness = 0.82,
-  FoamJacobianThreshold = 0.82,
-  FoamJacobianGain = 2.4,
-  -- Height contribution keeps whitecaps readable on the low-poly fallback path.
-  FoamHeightStart = 0.8,
-  FoamHeightGain = 0.5,
+  -- FoamJacobianThreshold is expressed as compression (1 - J), rather than
+  -- as the absolute Jacobian. Larger preset foam amounts lower the threshold
+  -- through FoamThresholdForPreset below.
+  FoamJacobianThreshold = 0.12,
+  FoamJacobianGain = 8,
+  FoamThresholdRange = 0.105,
+  FoamHeightStart = 0.45,
+  FoamHeightGain = 0.10,
+  FoamSlopeGain = 1.8,
+  FoamUpwardMotionWeight = 0.72,
+  FoamForwardMotionWeight = 0.20,
+  FoamMotionGain = 0.12,
+  FoamCrestHeightWeight = 1.15,
+  FoamCrestMotionWeight = 1.10,
+  FoamPersistenceCrestWeight = 0.65,
+  FoamPersistenceCompressionWeight = 0.45,
+  FoamPersistenceMotionWeight = 0.25,
+  FoamCompressionWeight = 0.62,
+  FoamSlopeWeight = 0.24,
+  FoamMotionWeight = 0.14,
+  FoamPersistenceWeight = 0.12,
   DefaultSeaLevel = 0,
   DefaultPreset = "Trade Sea",
   DefaultQuality = "High",
   MaxEventsPerSample = 4,
   StateVersion = 1,
   QualityProfiles = {
-    Ultra = {resolution = 65, spacing = 3, ringCount = 6, nearCadence = 60, waveCap = 14, normalRings = 3, foamCap = 128},
-    High = {resolution = 49, spacing = 4, ringCount = 6, nearCadence = 60, waveCap = 12, normalRings = 2, foamCap = 80},
-    Medium = {resolution = 33, spacing = 6, ringCount = 5, nearCadence = 40, waveCap = 9, normalRings = 1, foamCap = 40},
-    Low = {resolution = 25, spacing = 8, ringCount = 4, nearCadence = 24, waveCap = 6, normalRings = 0, foamCap = 16},
-    Fallback = {resolution = 0, spacing = 0, ringCount = 0, nearCadence = 0, waveCap = 0, normalRings = 0, foamCap = 0},
+    Ultra = {resolution = 65, spacing = 3, ringCount = 6, nearCadence = 60, waveCap = 14, normalRings = 3, foamCap = 128, horizonRange = 12000, horizonTileSize = 1800, horizonResolution = 5, horizonCadence = 0.5},
+    High = {resolution = 49, spacing = 4, ringCount = 6, nearCadence = 60, waveCap = 12, normalRings = 2, foamCap = 80, horizonRange = 8000, horizonTileSize = 1800, horizonResolution = 5, horizonCadence = 0.5},
+    Medium = {resolution = 33, spacing = 6, ringCount = 5, nearCadence = 40, waveCap = 9, normalRings = 1, foamCap = 40, horizonRange = 8000, horizonTileSize = 1800, horizonResolution = 5, horizonCadence = 0.75},
+    Low = {resolution = 25, spacing = 8, ringCount = 4, nearCadence = 24, waveCap = 6, normalRings = 0, foamCap = 16, horizonRange = 6000, horizonTileSize = 1800, horizonResolution = 5, horizonCadence = 1},
+    Fallback = {resolution = 0, spacing = 0, ringCount = 0, nearCadence = 0, waveCap = 0, normalRings = 0, foamCap = 0, horizonRange = 0, horizonTileSize = 0, horizonResolution = 0, horizonCadence = 0},
   },
 }
+
+function Config.TargetAggregateSteepness(preset: OceanTypes.OceanPreset): number
+  -- Hs establishes the readable silhouette while storm intensity supplies
+  -- the sharper crest response. The shipped presets evaluate to roughly
+  -- 0.07, 0.14, 0.28, 0.39, and 0.47.
+  local hsRatio = math.clamp(preset.significantWaveHeightMeters / 1.7, 0, 1)
+  local storm = math.clamp(preset.stormIntensity, 0, 1)
+  return math.clamp(0.045 + hsRatio * 0.16 + storm ^ 0.8 * 0.26, 0.03, Config.MaxAggregateSteepness)
+end
+
+function Config.FoamThresholdForPreset(preset: OceanTypes.OceanPreset): number
+  local amount = math.clamp(preset.foamAmount, 0, 1)
+  local storm = math.clamp(preset.stormIntensity, 0, 1)
+  local intensity = amount * 0.72 + storm * 0.28
+  return math.clamp(
+    Config.FoamJacobianThreshold - intensity * Config.FoamThresholdRange,
+    0.01,
+    Config.FoamJacobianThreshold
+  )
+end
+
+function Config.FoamIntensityFromThreshold(threshold: number): number
+  return math.clamp(
+    (Config.FoamJacobianThreshold - threshold) / math.max(Config.FoamThresholdRange, 1e-4),
+    0,
+    1
+  )
+end
 
 function Config.IsFinite(value: number): boolean
   return value == value and value > -math.huge and value < math.huge

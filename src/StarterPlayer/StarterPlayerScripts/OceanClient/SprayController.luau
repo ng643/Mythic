@@ -12,9 +12,7 @@ local function hash(x: number, z: number): number
 end
 
 local function sprayTexture(emitter: ParticleEmitter)
-  pcall(function()
-    emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-  end)
+  emitter.Texture = "rbxassetid://138338217463878"
 end
 
 function SprayController.new(waveField, runtime)
@@ -69,7 +67,7 @@ function SprayController:Start()
   self:_BuildPool()
   self.connection = RunService.RenderStepped:Connect(function(dt)
     self.clock += dt
-    if self.runtime:GetAttribute("OceanDebugSpray") == false then
+    if self.runtime:GetAttribute("OceanSprayEnabled") ~= true then
       for _, entry in ipairs(self.pool) do entry.emitter.Enabled = false end
       return
     end
@@ -87,9 +85,8 @@ function SprayController:Start()
         local worldX = math.floor(center.X / 24 + 0.5) * 24 + gx * 24
         local worldZ = math.floor(center.Z / 24 + 0.5) * 24 + gz * 24
         if hash(worldX, worldZ) > 0.12 then
-          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = 12, foamMultiplier = 1.8})
+          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = self.waveField:GetGameplayComponentCap(), foamMultiplier = 1.8})
           if sample.foam > 0.24 and (sample.position - center).Magnitude < 260 then
-            used += 1
             local entry = self.pool[used]
             local tangent = Vector3.new(sample.velocity.X, 0, sample.velocity.Z)
             if tangent.Magnitude < 0.01 then tangent = Vector3.xAxis end

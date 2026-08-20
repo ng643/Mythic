@@ -7,8 +7,8 @@ local Workspace = game:GetService("Workspace")
 local SwimmingController = {}
 SwimmingController.__index = SwimmingController
 
-function SwimmingController.new(waveField)
-  return setmetatable({waveField = waveField, connection = nil, force = nil, attachment = nil, swimming = false}, SwimmingController)
+function SwimmingController.new(waveField, runtime)
+  return setmetatable({waveField = waveField, runtime = runtime, connection = nil, force = nil, attachment = nil, swimming = false}, SwimmingController)
 end
 
 function SwimmingController:_EnsureForce(root: BasePart): VectorForce
@@ -36,6 +36,10 @@ end
 function SwimmingController:Start()
   if self.connection then return end
   self.connection = RunService.RenderStepped:Connect(function(dt)
+    if self.runtime and self.runtime:GetAttribute("OceanSwimmingEnabled") ~= true then
+      self.swimming = false
+      return
+    end
     local player = Players.LocalPlayer
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")

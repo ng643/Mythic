@@ -20,21 +20,103 @@ function ShipRegistry.new()
   return self
 end
 
+local function isDriverSeat(instance: Instance): boolean
+  return instance:IsA("VehicleSeat") or instance:IsA("Seat")
+end
+
+local function findDriverSeat(model: Model): Seat?
+  local named = model:FindFirstChild("DriverSeat", true)
+  if named and isDriverSeat(named) then
+    return named :: Seat
+  end
+
+  local marked: Seat? = nil
+  local vehicleSeat: Seat? = nil
+  local seat: Seat? = nil
+  for _, descendant in ipairs(model:GetDescendants()) do
+    if isDriverSeat(descendant) then
+      local candidate = descendant :: Seat
+      if candidate:GetAttribute("OceanDriverSeat") == true then
+        marked = candidate
+        break
+      end
+      if descendant:IsA("VehicleSeat") and not vehicleSeat then
+        vehicleSeat = descendant
+      elseif descendant:IsA("Seat") and not seat then
+        seat = candidate
+      end
+    end
+  end
+  return marked or vehicleSeat or seat
+end
+
+local function reportOwnershipFailure(entry, part: BasePart, targetName: string, phase: string, reason: any)
+  local key = phase .. ":" .. targetName .. ":" .. part:GetFullName()
+  local now = os.clock()
+  if entry.lastOwnershipWarningKey ~= key or now - (entry.lastOwnershipWarningAt or -math.huge) >= 1 then
+    entry.lastOwnershipWarningKey = key
+    entry.lastOwnershipWarningAt = now
+    warn(
+      string.format(
+        "OceanShip SetNetworkOwner %s failed for %s on %s (%s); retrying",
+        phase,
+        targetName,
+        part:GetFullName(),
+        tostring(reason)
+      )
+    )
+  end
+end
+
 function ShipRegistry:_ApplyOwnership(entry)
   local desiredOwner: Player? = nil
   if entry.policy == "Driver" then
-    local seat = entry.model:FindFirstChild("DriverSeat", true)
-    local occupant = seat and seat:IsA("Seat") and seat.Occupant
-    desiredOwner = occupant and Players:GetPlayerFromCharacter(occupant.Parent) or nil
-  end
-  if desiredOwner == entry.networkOwner then return end
-  for _, descendant in ipairs(entry.model:GetDescendants()) do
-    if descendant:IsA("BasePart") then
-      pcall(function() descendant:SetNetworkOwner(desiredOwner) end)
+    local seat = findDriverSeat(entry.model)
+    local occupant = seat and seat.Occupant
+    if occupant and occupant.Parent then
+      desiredOwner = Players:GetPlayerFromCharacter(occupant.Parent)
     end
   end
-  entry.networkOwner = desiredOwner
+  if not entry.ownershipDirty and desiredOwner == entry.networkOwner then return end
+
+  local targetName = desiredOwner and desiredOwner.Name or "server"
+  local allSucceeded = true
+  local parts = {}
+  for _, descendant in ipairs(entry.model:GetDescendants()) do
+    if descendant:IsA("BasePart") then
+      table.insert(parts, descendant)
+      local ok, reason = pcall(function()
+        descendant:SetNetworkOwner(desiredOwner)
+      end)
+      if not ok then
+        allSucceeded = false
+        reportOwnershipFailure(entry, descendant, targetName, "assignment", reason)
+      end
+    end
+  end
+
+  if allSucceeded then
+    entry.networkOwner = desiredOwner
+    entry.ownershipDirty = false
+    return
+  end
+
+  -- A failed client assignment must not leave a partially owned assembly.
+  -- Return every part to server ownership and retry the requested owner later.
+  entry.networkOwner = nil
+  entry.ownershipDirty = true
+  if desiredOwner then
+    for _, part in ipairs(parts) do
+      local ok, reason = pcall(function()
+        part:SetNetworkOwner(nil)
+      end)
+      if not ok then
+        reportOwnershipFailure(entry, part, "server", "fallback", reason)
+      end
+    end
+  end
 end
+
 
 function ShipRegistry:UpdateOwnership()
   for _, entry in pairs(self.ships) do
@@ -109,7 +191,16 @@ function ShipRegistry:Register(instance: Instance): boolean
     warn("OceanShip using Server ownership for invalid policy " .. model:GetFullName())
     policy = "Server"
   end
-  self.ships[model] = {model = model, root = root, points = points, policy = policy, networkOwner = nil}
+  self.ships[model] = {
+    model = model,
+    root = root,
+    points = points,
+    policy = policy,
+    networkOwner = nil,
+    ownershipDirty = true,
+    lastOwnershipWarningKey = nil,
+    lastOwnershipWarningAt = -math.huge,
+  }
   self:_ApplyOwnership(self.ships[model])
   return true
 end

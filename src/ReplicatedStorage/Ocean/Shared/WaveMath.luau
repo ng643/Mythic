@@ -69,6 +69,50 @@ local function evaluateEvent(event: OceanTypes.WaveEvent, worldXZ: Vector2, serv
   return height, gradient, velocity
 end
 
+local function deriveFoamSignals(
+  position: Vector3,
+  seaLevel: number,
+  normal: Vector3,
+  velocity: Vector3,
+  jacobian: number,
+  foamThreshold: number
+)
+  local crestHeight = math.max(position.Y - seaLevel, 0)
+  local crestFactor = saturate((crestHeight - Config.FoamHeightStart) * Config.FoamHeightGain)
+  local upwardMotion = math.max(velocity.Y, 0)
+  local horizontalSpeed = Vector2.new(velocity.X, velocity.Z).Magnitude
+  local crestMotion = saturate(
+    (upwardMotion * Config.FoamUpwardMotionWeight + horizontalSpeed * Config.FoamForwardMotionWeight)
+      * Config.FoamMotionGain
+  )
+  local slope = saturate((1 - math.clamp(normal.Y, 0, 1)) * Config.FoamSlopeGain)
+  local compression = saturate((1 - jacobian - foamThreshold) * Config.FoamJacobianGain)
+  local foamIntensity = Config.FoamIntensityFromThreshold(foamThreshold)
+  local crestEligibility = saturate(
+    crestFactor * Config.FoamCrestHeightWeight + crestMotion * Config.FoamCrestMotionWeight
+  )
+  -- This is a deterministic spatial/temporal hysteresis signal. It is zero
+  -- in troughs, but remains nonzero across the descending shoulder after a
+  -- crest, avoiding a one-sample whitecap flicker.
+  local persistence = saturate(
+    (crestFactor * Config.FoamPersistenceCrestWeight
+      + compression * Config.FoamPersistenceCompressionWeight
+      + crestMotion * Config.FoamPersistenceMotionWeight)
+      * crestEligibility
+  )
+  local foamCore = saturate(
+    compression * Config.FoamCompressionWeight
+      + slope * Config.FoamSlopeWeight
+      + crestMotion * Config.FoamMotionWeight
+  )
+  local foamGate = saturate(crestEligibility * (0.82 + foamIntensity * 0.18) + persistence * 0.12)
+  local foam = saturate(
+    (foamCore * foamGate + persistence * Config.FoamPersistenceWeight)
+      * (0.35 + foamIntensity * 0.9)
+  )
+  return crestHeight, crestMotion, slope, compression, persistence, foamIntensity, foam
+end
+
 function WaveMath.EvaluateLabel(
   baseXZ: Vector2,
   serverTime: number,
@@ -83,7 +127,6 @@ function WaveMath.EvaluateLabel(
   local tangentX = Vector3.new(1, 0, 0)
   local tangentZ = Vector3.new(0, 0, 1)
   local velocity = Vector3.zero
-  local jacobian = 1
   local componentCap = options and options.componentCap or #components
   local zoneAmplitude = options and options.zoneAmplitude or 1
   local count = math.min(componentCap, #components)
@@ -105,7 +148,6 @@ function WaveMath.EvaluateLabel(
     velocity += Vector3.new(horizontalAmplitude * dx * component.angularFrequency * sinTheta, -amplitude * component.angularFrequency * cosTheta, horizontalAmplitude * dz * component.angularFrequency * sinTheta)
   end
 
-  local eventVelocity = Vector2.zero
   if options == nil or options.includeEvents ~= false then
     local eventCount = 0
     for _, event in ipairs(events or {}) do
@@ -116,22 +158,24 @@ function WaveMath.EvaluateLabel(
         tangentX += Vector3.new(0, gradient.X, 0)
         tangentZ += Vector3.new(0, gradient.Y, 0)
         velocity += Vector3.new(horizontalVelocity.X, 0, horizontalVelocity.Y)
-        eventVelocity += horizontalVelocity
         eventCount += 1
       end
     end
   end
 
   local normal = safeUnit(tangentZ:Cross(tangentX))
-  jacobian = tangentX.X * tangentZ.Z - tangentX.Z * tangentZ.X
-  local slope = 1 - math.clamp(normal.Y, 0, 1)
-  local compression = saturate((foamThreshold - jacobian) * Config.FoamJacobianGain)
-  local elevation = saturate((position.Y - seaLevel - Config.FoamHeightStart) * Config.FoamHeightGain)
-  local foam = saturate(compression * 0.7 + slope * 0.35 + elevation * 0.45)
+  local jacobian = tangentX.X * tangentZ.Z - tangentX.Z * tangentZ.X
+  local crestHeight, crestMotion, slope, compression, persistence, foamIntensity, foam = deriveFoamSignals(
+    position,
+    seaLevel,
+    normal,
+    velocity,
+    jacobian,
+    foamThreshold
+  )
   local foamMultiplier = options and options.foamMultiplier or 1
   foam = saturate(foam * foamMultiplier)
-  local _ = eventVelocity
-  return {
+  local sample: any = {
     position = position,
     height = position.Y,
     normal = normal,
@@ -139,13 +183,25 @@ function WaveMath.EvaluateLabel(
     foam = foam,
     jacobian = jacobian,
     inverseResidual = 0,
+    crestHeight = crestHeight,
+    crestMotion = crestMotion,
+    slope = slope,
+    compression = compression,
+    foamPersistence = persistence,
+    foamIntensity = foamIntensity,
   }
+  return sample
 end
 
 function WaveMath.BlendSamples(a: OceanTypes.WaveSample, b: OceanTypes.WaveSample, alpha: number): OceanTypes.WaveSample
   local t = math.clamp(alpha, 0, 1)
   local normal = safeUnit(a.normal:Lerp(b.normal, t))
-  return {
+  local aa: any = a
+  local bb: any = b
+  local function blendField(name: string): number
+    return (aa[name] or 0) + ((bb[name] or 0) - (aa[name] or 0)) * t
+  end
+  local sample: any = {
     position = a.position:Lerp(b.position, t),
     height = a.height + (b.height - a.height) * t,
     normal = normal,
@@ -153,6 +209,81 @@ function WaveMath.BlendSamples(a: OceanTypes.WaveSample, b: OceanTypes.WaveSampl
     foam = a.foam + (b.foam - a.foam) * t,
     jacobian = a.jacobian + (b.jacobian - a.jacobian) * t,
     inverseResidual = a.inverseResidual + (b.inverseResidual - a.inverseResidual) * t,
+    crestHeight = blendField("crestHeight"),
+    crestMotion = blendField("crestMotion"),
+    slope = blendField("slope"),
+    compression = blendField("compression"),
+    foamPersistence = blendField("foamPersistence"),
+    foamIntensity = blendField("foamIntensity"),
+  }
+  return sample
+end
+
+local function percentile(values: {number}, fraction: number): number
+  if #values == 0 then return 0 end
+  table.sort(values)
+  local index = math.clamp(math.ceil(#values * fraction), 1, #values)
+  return values[index]
+end
+
+function WaveMath.MeasureDiagnostics(
+  components: {OceanTypes.WaveComponent},
+  seaLevel: number,
+  foamThreshold: number,
+  sampleSeed: number?
+): {[string]: number}
+  local jacobians = {}
+  local foams = {}
+  local slopes = {}
+  local crestHeights = {}
+  local foamSum = 0
+  local seed = math.floor(sampleSeed or 0)
+  local offsetX = (seed % 53) * 1.73
+  local offsetZ = (seed % 47) * 1.37
+  local times = {0, 1.17, 2.43, 3.71}
+  for timeIndex, sampleTime in ipairs(times) do
+    for ix = -4, 4 do
+      for iz = -4, 4 do
+        local label = Vector2.new(
+          ix * 73.25 + offsetX + timeIndex * 11.5,
+          iz * 61.75 + offsetZ - timeIndex * 7.25
+        )
+        local sample: any = WaveMath.EvaluateLabel(
+          label,
+          sampleTime,
+          components,
+          seaLevel,
+          foamThreshold,
+          {includeEvents = false}
+        )
+        table.insert(jacobians, sample.jacobian)
+        table.insert(foams, sample.foam)
+        table.insert(slopes, sample.slope)
+        table.insert(crestHeights, sample.crestHeight)
+        foamSum += sample.foam
+      end
+    end
+  end
+  table.sort(jacobians)
+  return {
+    sampleCount = #foams,
+    jacobianMin = jacobians[1] or 0,
+    jacobianP01 = percentile(jacobians, 0.01),
+    jacobianP05 = percentile(jacobians, 0.05),
+    jacobianP50 = percentile(jacobians, 0.50),
+    jacobianP95 = percentile(jacobians, 0.95),
+    slopeP50 = percentile(slopes, 0.50),
+    slopeP90 = percentile(slopes, 0.90),
+    slopeP95 = percentile(slopes, 0.95),
+    crestHeightP50 = percentile(crestHeights, 0.50),
+    crestHeightP90 = percentile(crestHeights, 0.90),
+    crestHeightP95 = percentile(crestHeights, 0.95),
+    foamMean = foamSum / math.max(#foams, 1),
+    foamP50 = percentile(foams, 0.50),
+    foamP90 = percentile(foams, 0.90),
+    foamP95 = percentile(foams, 0.95),
+    foamP99 = percentile(foams, 0.99),
+    foamMax = percentile(foams, 1),
   }
 end
 

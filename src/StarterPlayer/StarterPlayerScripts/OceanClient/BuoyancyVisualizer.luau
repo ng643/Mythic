@@ -41,6 +41,7 @@ end
 
 function BuoyancyVisualizer:Start()
   if not RunService:IsStudio() or self.connection then return end
+  if self.runtime:GetAttribute("OceanDebugBuoyancy") ~= true then return end
   self:_Build()
   self.connection = RunService.RenderStepped:Connect(function()
     local enabled = self.runtime:GetAttribute("OceanDebugBuoyancy") == true

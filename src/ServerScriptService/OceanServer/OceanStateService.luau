@@ -7,12 +7,50 @@ local Config = require(ReplicatedStorage.Ocean.Shared.OceanConfig)
 local OceanTypes = require(ReplicatedStorage.Ocean.Shared.OceanTypes)
 local Presets = require(ReplicatedStorage.Ocean.Shared.OceanPresets)
 local SpectrumGenerator = require(ReplicatedStorage.Ocean.Shared.SpectrumGenerator)
+local WaveMath = require(ReplicatedStorage.Ocean.Shared.WaveMath)
 
 local OceanStateService = {}
 OceanStateService.__index = OceanStateService
 
 local function now(): number
   return Workspace:GetServerTimeNow()
+end
+
+local function printSpectrumDiagnostics(preset: OceanTypes.OceanPreset, bank: {OceanTypes.WaveComponent}, seed: number, foamThreshold: number, label: string)
+  if not (RunService:IsStudio() and ReplicatedStorage.Ocean:GetAttribute("OceanDebugSpectrum") == true) then
+    return
+  end
+  local targetHs = preset.significantWaveHeightMeters * Config.MetersToStuds
+  local targetSteepness = Config.TargetAggregateSteepness(preset)
+  local summary = SpectrumGenerator.Summarize(bank, targetHs, targetSteepness)
+  local samples = WaveMath.MeasureDiagnostics(bank, Config.DefaultSeaLevel, foamThreshold, seed)
+  print(string.format(
+    "OceanSpectrum | %s=%s components=%d wavelengths=%.1f/%.1f/%.1f periods=%.2f..%.2f Hs=%.3f/%.3f err=%.2f%% steepness=%.3f/%.3f J[min/p01/p50]=%.3f/%.3f/%.3f foam[p50/p90/p95/p99]=%.3f/%.3f/%.3f/%.3f slope[p50/p95]=%.3f/%.3f crest[p50/p95]=%.3f/%.3f",
+    label,
+    preset.name,
+    summary.componentCount,
+    summary.wavelengthMin,
+    summary.wavelengthMedian,
+    summary.wavelengthMax,
+    summary.periodMin,
+    summary.periodMax,
+    summary.significantHeight,
+    summary.targetSignificantHeight,
+    summary.hsErrorRatio * 100,
+    summary.aggregateSteepness,
+    summary.targetAggregateSteepness,
+    samples.jacobianMin,
+    samples.jacobianP01,
+    samples.jacobianP50,
+    samples.foamP50,
+    samples.foamP90,
+    samples.foamP95,
+    samples.foamP99,
+    samples.slopeP50,
+    samples.slopeP95,
+    samples.crestHeightP50,
+    samples.crestHeightP95
+  ))
 end
 
 function OceanStateService.new()
@@ -24,10 +62,7 @@ function OceanStateService.new()
     presetName = preset.name,
     callbacks = {},
   }, OceanStateService)
-  if RunService:IsStudio() and ReplicatedStorage.Ocean:GetAttribute("OceanDebugSpectrum") == true then
-    local summary = SpectrumGenerator.Summarize(self.state.bankA)
-    print(string.format("OceanSpectrum | preset=%s components=%d wavelengths=%.1f/%.1f/%.1f periods=%.2f..%.2f variance=%.3f steepness=%.3f", preset.name, summary.componentCount, summary.wavelengthMin, summary.wavelengthMedian, summary.wavelengthMax, summary.periodMin, summary.periodMax, summary.totalVariance, summary.aggregateSteepness))
-  end
+  printSpectrumDiagnostics(preset, self.state.bankA, seed, self.state.foamThreshold, "preset")
   return self
 end
 
@@ -79,10 +114,8 @@ function OceanStateService:TransitionTo(presetName: string, duration: number?): 
   end
   local transitionSeed = self.state.seed + math.floor(now() * 1000) % 1000003
   self.state.bankB = SpectrumGenerator.Generate(preset, transitionSeed)
-  if RunService:IsStudio() and ReplicatedStorage.Ocean:GetAttribute("OceanDebugSpectrum") == true then
-    local summary = SpectrumGenerator.Summarize(self.state.bankB)
-    print(string.format("OceanSpectrum | transition=%s components=%d wavelengths=%.1f/%.1f/%.1f periods=%.2f..%.2f variance=%.3f steepness=%.3f", preset.name, summary.componentCount, summary.wavelengthMin, summary.wavelengthMedian, summary.wavelengthMax, summary.periodMin, summary.periodMax, summary.totalVariance, summary.aggregateSteepness))
-  end
+  local foamThreshold = Config.FoamThresholdForPreset(preset)
+  printSpectrumDiagnostics(preset, self.state.bankB, transitionSeed, foamThreshold, "transition")
   self.state.bankBlendStart = transitionNow
   self.state.bankBlendDuration = transitionDuration
   self.state.bankBlendTarget = 1
@@ -90,7 +123,7 @@ function OceanStateService:TransitionTo(presetName: string, duration: number?): 
   self.state.horizonColor = preset.horizonColor
   self.state.roughness = preset.roughness
   self.state.clarity = math.clamp(1 - preset.stormIntensity * 0.65, 0.15, 1)
-  self.state.foamThreshold = Config.FoamJacobianThreshold - preset.foamAmount * 0.18
+  self.state.foamThreshold = foamThreshold
   self.state.windWorld = Vector3.new(math.cos(math.rad(preset.windDirectionDegrees)), 0, math.sin(math.rad(preset.windDirectionDegrees))) * preset.windSpeedMetersPerSecond * Config.MetersToStuds
   self.state.stormIntensity = preset.stormIntensity
   self.state.seed = transitionSeed

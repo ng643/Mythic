@@ -12,9 +12,7 @@ local function hash(x: number, z: number): number
 end
 
 local function foamTexture(emitter: ParticleEmitter)
-  pcall(function()
-    emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-  end)
+  emitter.Texture = "rbxassetid://140229416139720"
 end
 
 function FoamController.new(waveField, runtime)
@@ -55,7 +53,39 @@ function FoamController:_BuildPool()
     emitter.LightEmission = 0.05
     foamTexture(emitter)
     emitter.Parent = attachment
-    table.insert(self.pool, {anchor = anchor, emitter = emitter, lastEmit = -math.huge})
+    local ribbonA = Instance.new("Attachment")
+    ribbonA.Name = "CrestRibbon_A"
+    ribbonA.Position = Vector3.new(-0.8, 0, 0)
+    ribbonA.Parent = anchor
+    local ribbonB = Instance.new("Attachment")
+    ribbonB.Name = "CrestRibbon_B"
+    ribbonB.Position = Vector3.new(0.8, 0, 0)
+    ribbonB.Parent = anchor
+    local ribbon = Instance.new("Trail")
+    ribbon.Name = "CrestRibbon"
+    ribbon.Attachment0 = ribbonA
+    ribbon.Attachment1 = ribbonB
+    ribbon.FaceCamera = false
+    ribbon.Texture = "rbxassetid://140229416139720"
+    ribbon.TextureMode = Enum.TextureMode.Wrap
+    ribbon.Lifetime = 1.6
+    ribbon.MinLength = 0.2
+    ribbon.MaxLength = 24
+    ribbon.Color = ColorSequence.new(Color3.fromRGB(224, 246, 244))
+    ribbon.Transparency = NumberSequence.new({
+      NumberSequenceKeypoint.new(0, 0.2),
+      NumberSequenceKeypoint.new(0.75, 0.55),
+      NumberSequenceKeypoint.new(1, 1),
+    })
+    ribbon.WidthScale = NumberSequence.new({
+      NumberSequenceKeypoint.new(0, 0.1),
+      NumberSequenceKeypoint.new(0.35, 1),
+      NumberSequenceKeypoint.new(1, 0.05),
+    })
+    ribbon.Enabled = false
+    ribbon.Parent = anchor
+    table.insert(self.pool, {anchor = anchor, emitter = emitter, ribbon = ribbon, ribbonA = ribbonA, ribbonB = ribbonB, lastEmit = -math.huge})
+    continue
   end
 end
 
@@ -69,8 +99,11 @@ function FoamController:Start()
   self:_BuildPool()
   self.connection = RunService.RenderStepped:Connect(function(dt)
     self.clock += dt
-    if self.runtime:GetAttribute("OceanDebugFoam") == false then
-      for _, entry in ipairs(self.pool) do entry.emitter.Enabled = false end
+    if self.runtime:GetAttribute("OceanFoamEnabled") ~= true then
+      for _, entry in ipairs(self.pool) do
+        entry.emitter.Enabled = false
+        entry.ribbon.Enabled = false
+      end
       return
     end
     if self.clock < 0.1 then return end
@@ -87,13 +120,17 @@ function FoamController:Start()
         local worldX = math.floor(center.X / 18 + 0.5) * 18 + gx * 18
         local worldZ = math.floor(center.Z / 18 + 0.5) * 18 + gz * 18
         if hash(worldX, worldZ) > 0.18 then
-          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = 12, foamMultiplier = 1.8})
+          local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = self.waveField:GetGameplayComponentCap(), foamMultiplier = 1.8})
           if sample.foam > 0.16 and (sample.position - center).Magnitude < 260 then
             used += 1
             local entry = self.pool[used]
             local tangent = Vector3.new(sample.velocity.X, 0, sample.velocity.Z)
             if tangent.Magnitude < 0.01 then tangent = Vector3.xAxis end
             entry.anchor.CFrame = CFrame.lookAt(sample.position + sample.normal * 0.08, sample.position + sample.normal * 0.08 + tangent.Unit, sample.normal)
+            local ribbonWidth = math.clamp(0.3 + sample.foam * 1.6, 0.3, 2.6)
+            entry.ribbonA.Position = Vector3.new(-ribbonWidth, 0, 0)
+            entry.ribbonB.Position = Vector3.new(ribbonWidth, 0, 0)
+            entry.ribbon.Enabled = true
             entry.emitter.Enabled = true
             if now - entry.lastEmit > 0.32 then
               entry.emitter:Emit(math.clamp(math.floor(sample.foam * 3) + 1, 1, 5))
@@ -103,7 +140,10 @@ function FoamController:Start()
         end
       end
     end
-    for index = used + 1, #self.pool do self.pool[index].emitter.Enabled = false end
+    for index = used + 1, #self.pool do
+      self.pool[index].emitter.Enabled = false
+      self.pool[index].ribbon.Enabled = false
+    end
     debug.profileend()
   end)
 end

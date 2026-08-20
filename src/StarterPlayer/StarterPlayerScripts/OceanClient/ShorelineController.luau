@@ -43,7 +43,7 @@ function ShorelineController:_Build()
           emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.35, 1.1), NumberSequenceKeypoint.new(1, 0.1)})
           emitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.75, 0.5), NumberSequenceKeypoint.new(1, 1)})
           emitter.Color = ColorSequence.new(Color3.fromRGB(220, 245, 242))
-          pcall(function() emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds" end)
+          emitter.Texture = "rbxassetid://140229416139720"
           emitter.Parent = attachment
           table.insert(self.emitters, {anchor = anchor, point = point, emitter = emitter, lastEmit = -math.huge})
         end
@@ -56,6 +56,10 @@ function ShorelineController:Start()
   if self.connection then return end
   self:_Build()
   self.connection = RunService.RenderStepped:Connect(function()
+    if self.runtime:GetAttribute("OceanShorelineEnabled") ~= true then
+      for _, entry in ipairs(self.emitters) do entry.emitter.Enabled = false end
+      return
+    end
     if #self.emitters == 0 then return end
     local now = self.waveField:GetSynchronizedTime()
     for _, entry in ipairs(self.emitters) do

@@ -7,8 +7,8 @@ local Workspace = game:GetService("Workspace")
 local UnderwaterController = {}
 UnderwaterController.__index = UnderwaterController
 
-function UnderwaterController.new(waveField)
-  return setmetatable({waveField = waveField, underwater = false, connection = nil, effect = nil, enteredAt = 0}, UnderwaterController)
+function UnderwaterController.new(waveField, runtime)
+  return setmetatable({waveField = waveField, runtime = runtime, underwater = false, connection = nil, effect = nil, enteredAt = 0}, UnderwaterController)
 end
 
 function UnderwaterController:_SetUnderwater(value: boolean, now: number)
@@ -35,9 +35,12 @@ function UnderwaterController:Start()
   end
   self.effect = effect
   self.connection = RunService.RenderStepped:Connect(function()
+    if self.runtime and self.runtime:GetAttribute("OceanUnderwaterEnabled") ~= true then
+      self:_SetUnderwater(false, self.waveField:GetSynchronizedTime())
+      return
+    end
     local camera = Workspace.CurrentCamera
     if not camera then return end
-    debug.profilebegin("Ocean/Underwater")
     local serverTime = self.waveField:GetSynchronizedTime()
     local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(camera.CFrame.Position.X, camera.CFrame.Position.Z), serverTime, {inverseIterations = 3})
     local y = camera.CFrame.Position.Y
