@@ -87,6 +87,7 @@ function SprayController:Start()
         if hash(worldX, worldZ) > 0.12 then
           local sample = self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {inverseIterations = 2, componentCap = self.waveField:GetGameplayComponentCap(), foamMultiplier = 1.8})
           if sample.foam > 0.24 and (sample.position - center).Magnitude < 260 then
+            used += 1
             local entry = self.pool[used]
             local tangent = Vector3.new(sample.velocity.X, 0, sample.velocity.Z)
             if tangent.Magnitude < 0.01 then tangent = Vector3.xAxis end

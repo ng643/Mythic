@@ -234,7 +234,8 @@ function OceanRenderer:_BuildRing(level: number)
   local spacing = profile.spacing * 2 ^ level
   local outerHalf = math.floor((profile.resolution - 1) * 0.5)
   local innerHalf = level == 0 and 0 or outerHalf * 0.5
-  local mesh = AssetService:CreateEditableMesh()
+  local mesh, meshReason = AssetService:CreateEditableMesh()
+  if not mesh then error("CreateEditableMesh ring failed: " .. tostring(meshReason)) end
   local vertexMap = {}
   local vertices = {}
   local normals = {}
@@ -273,27 +274,47 @@ function OceanRenderer:_BuildRing(level: number)
         local bLabel = Vector2.new(i * spacing, (j + 1) * spacing)
         local dLabel = Vector2.new((i + 1) * spacing, (j + 1) * spacing)
         local cLabel = Vector2.new((i + 1) * spacing, j * spacing)
-        local polygon = {aLabel, bLabel, dLabel, cLabel}
-        local labelsForEdges = {{i - 1, j}, {i, j + 1}, {i + 1, j}, {i, j - 1}}
-        local expanded = {}
-        for edgeIndex, label in ipairs(polygon) do
-          table.insert(expanded, label)
-          local neighbor = labelsForEdges[edgeIndex]
-          if edgeIsHole(neighbor[1], neighbor[2]) then
-            local nextLabel = polygon[edgeIndex % #polygon + 1]
-            table.insert(expanded, (label + nextLabel) * 0.5)
+        local boundaryEdges = {
+          edgeIsHole(i - 1, j),
+          edgeIsHole(i, j + 1),
+          edgeIsHole(i + 1, j),
+          edgeIsHole(i, j - 1),
+        }
+        local hasHoleEdge = boundaryEdges[1] or boundaryEdges[2] or boundaryEdges[3] or boundaryEdges[4]
+        if not hasHoleEdge then
+          local a = getVertex(aLabel)
+          local b = getVertex(bLabel)
+          local c = getVertex(cLabel)
+          local d = getVertex(dLabel)
+          local faceOne = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
+          mesh:SetFaceNormals(faceOne, {normals[a], normals[b], normals[c]})
+          setFaceUVs(mesh, faceOne, {uvs[a], uvs[b], uvs[c]}, self.runtime)
+          local faceTwo = mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
+          mesh:SetFaceNormals(faceTwo, {normals[c], normals[b], normals[d]})
+          setFaceUVs(mesh, faceTwo, {uvs[c], uvs[b], uvs[d]}, self.runtime)
+          triangleCount += 2
+        else
+          local polygon = {aLabel, bLabel, dLabel, cLabel}
+          local labelsForEdges = {{i - 1, j}, {i, j + 1}, {i + 1, j}, {i, j - 1}}
+          local expanded = {}
+          for edgeIndex, label in ipairs(polygon) do
+            table.insert(expanded, label)
+            local neighbor = labelsForEdges[edgeIndex]
+            if edgeIsHole(neighbor[1], neighbor[2]) then
+              local nextLabel = polygon[edgeIndex % #polygon + 1]
+              table.insert(expanded, (label + nextLabel) * 0.5)
+            end
           end
-        end
-        local centerLabel = (aLabel + bLabel + cLabel + dLabel) * 0.25
-        local center = getVertex(centerLabel)
-        for polygonIndex, label in ipairs(expanded) do
-          local nextLabel = expanded[polygonIndex % #expanded + 1]
-          local first = getVertex(label)
-          local second = getVertex(nextLabel)
-          local face = mesh:AddTriangle(vertices[center], vertices[first], vertices[second])
-          mesh:SetFaceNormals(face, {normals[center], normals[first], normals[second]})
-          setFaceUVs(mesh, face, {uvs[center], uvs[first], uvs[second]}, self.runtime)
-          triangleCount += 1
+          local center = getVertex((aLabel + bLabel + cLabel + dLabel) * 0.25)
+          for polygonIndex, label in ipairs(expanded) do
+            local nextLabel = expanded[polygonIndex % #expanded + 1]
+            local first = getVertex(label)
+            local second = getVertex(nextLabel)
+            local face = mesh:AddTriangle(vertices[center], vertices[first], vertices[second])
+            mesh:SetFaceNormals(face, {normals[center], normals[first], normals[second]})
+            setFaceUVs(mesh, face, {uvs[center], uvs[first], uvs[second]}, self.runtime)
+            triangleCount += 1
+          end
         end
       end
     end
