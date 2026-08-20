@@ -5,7 +5,7 @@ Status: implementation complete for the reachable code and Edit-DataModel checks
 ## Repository and place
 
 - Audited baseline: `064480becf992afa7662b31a5995f1fedc34bade`.
-- Current repository commit: `68dad63c2d2ceaa4c1da96b93accf84df31e9f25` (`Optimize recovery render and VFX paths`).
+- Current repository commit: `2e622109c564d5ea028ef625fdb4b523d79e339e` (`Improve boat buoyancy shading and wave LOD`).
 - Branch: `main`, synchronized with `origin/main`.
 - Place: Mythic, place ID `89252995862215`.
 - Studio: `0.735.0.7351131`, AMD Radeon 880M, Vulkan, 32 GB host memory, 2880-wide Studio viewport.
