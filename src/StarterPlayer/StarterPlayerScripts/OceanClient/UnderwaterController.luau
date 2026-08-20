@@ -66,6 +66,7 @@ function UnderwaterController:Start()
     self.sampleAccumulator %= SAMPLE_INTERVAL
     debug.profilebegin("Ocean/Underwater")
     local serverTime = self.waveField:GetSynchronizedTime()
+    local position = camera.CFrame.Position
     local sample = self.scheduler
       and self.scheduler:Sample(Vector2.new(position.X, position.Z), serverTime, {inverseIterations = 3, includeEvents = false})
       or self.waveField:SampleForGameplayWorldXZ(Vector2.new(position.X, position.Z), serverTime, {inverseIterations = 3, includeEvents = false})

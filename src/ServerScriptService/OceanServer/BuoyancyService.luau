@@ -170,7 +170,7 @@ function BuoyancyService:_Step(dt: number)
     if root.Parent and finite(entry.dryMass) and entry.dryMass > 0 then
       local assemblyMass = root.AssemblyMass
       local payloadTarget = math.clamp(assemblyMass - entry.dryMass, 0, entry.dryMass * 0.75)
-      local blend = math.clamp(dt / 1.5, 0, 1)
+      local blend = math.clamp(dt / 0.25, 0, 1)
       entry.payloadMass += (payloadTarget - entry.payloadMass) * blend
       local controlMass = entry.dryMass + entry.payloadMass
       entry.effectiveMass = controlMass
@@ -179,6 +179,7 @@ function BuoyancyService:_Step(dt: number)
       local dampingRatio = math.clamp(entry.model:GetAttribute("DampingRatio") or 0.88, 0.65, 1.15)
       local aggregateForce = Vector3.zero
       local aggregateTorque = Vector3.zero
+      local averageWaterNormal = Vector3.zero
       local wetPoints = 0
       local invalidSamples = 0
 
@@ -203,6 +204,7 @@ function BuoyancyService:_Step(dt: number)
         local pendingForce = Vector3.zero
         local depth = 0
         if validSample(sample) then
+          averageWaterNormal += sample.normal * point.weight
           depth = sample.height - worldPosition.Y
           point.lastDepth = depth
           if depth > 0 then
@@ -239,10 +241,9 @@ function BuoyancyService:_Step(dt: number)
       local aggregateLimit = controlMass * Workspace.Gravity * 3.0
       local aggregateScale = aggregateForce.Magnitude > aggregateLimit and aggregateLimit / aggregateForce.Magnitude or 1
       local torqueLimit = controlMass * Workspace.Gravity * 4
-      local torqueScale = aggregateTorque.Magnitude > torqueLimit and torqueLimit / aggregateTorque.Magnitude or 1
       for _, point in ipairs(entry.points) do
         local force = self:_EnsureForce(entry, point)
-        local scaled = point.pendingForce * aggregateScale * torqueScale
+        local scaled = point.pendingForce * aggregateScale
         point.lastForce = scaled
         force.Force = scaled
         force.Enabled = true
@@ -266,17 +267,28 @@ function BuoyancyService:_Step(dt: number)
       end
 
       local stabilizer = self:_EnsureStabilityTorque(entry)
+      local targetUp = averageWaterNormal.Magnitude > 1e-4 and averageWaterNormal.Unit or UP
+      targetUp = UP:Lerp(targetUp, 0.35).Unit
+      entry.desiredUp = entry.desiredUp
+        and entry.desiredUp:Lerp(targetUp, math.clamp(dt * 3, 0, 1)).Unit
+        or targetUp
       local bodyUp = root.CFrame.UpVector
-      local tiltError = UP:Cross(bodyUp)
+      local tiltError = bodyUp:Cross(entry.desiredUp)
       local angularVelocity = root.AssemblyAngularVelocity
       local horizontalAngular = angularVelocity - UP * angularVelocity:Dot(UP)
-      local stabilizingTorque = tiltError * (controlMass * Workspace.Gravity * 0.55)
-        - horizontalAngular * (controlMass * 1.15)
-      stabilizer.Torque = clampMagnitude(stabilizingTorque, controlMass * Workspace.Gravity * 2.2)
+      local desiredAngularAcceleration = clampMagnitude(tiltError * 3.2 - horizontalAngular * 2.1, 3.5)
+      local torqueOk, stabilizingTorque = pcall(function()
+        return root:AngularAccelerationToTorque(desiredAngularAcceleration)
+      end)
+      if not torqueOk or not finiteVector(stabilizingTorque) then
+        stabilizingTorque = Vector3.zero
+      end
+      local maxTorque = math.max(entry.model:GetAttribute("MaxStabilizerTorque") or controlMass * Workspace.Gravity * 2.2, 1)
+      stabilizer.Torque = clampMagnitude(stabilizingTorque, maxTorque)
       stabilizer.Enabled = true
 
-      local committedForce = aggregateForce * aggregateScale * torqueScale + (drag.Force or Vector3.zero)
-      local committedTorque = aggregateTorque * aggregateScale * torqueScale + stabilizer.Torque
+      local committedForce = aggregateForce * aggregateScale + (drag.Force or Vector3.zero)
+      local committedTorque = clampMagnitude(aggregateTorque * aggregateScale, torqueLimit) + stabilizer.Torque
       entry.lastTotalForce = committedForce
       entry.lastTotalTorque = committedTorque
       entry.lastWetPoints = wetPoints

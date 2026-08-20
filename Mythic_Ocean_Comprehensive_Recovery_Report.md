@@ -198,6 +198,16 @@ Smoke probes passed for ship registry registration, VFX controller construction,
 - `OceanNetworkOwnership=Server`.
 - SpawnLocation removed; ShipSpawnPoint is a nonphysical attachment at HullRoot local `(0,2.5,0)`.
 
+## Actual-water and ship correction
+
+- Clean-start renderer now uses asset-free Glass before material initialization; the local helper no longer references `self`.
+- Production near and transition faces now retain and validate `SetFaceNormals` and `SetFaceColors` IDs. Runtime color mutation uses the current two-argument `SetColor(colorId, color)` API.
+- PBR is opt-in and only activates after every configured asset reports final `Enum.AssetFetchStatus.Success`. Glass telemetry reports `OceanMaterialPath=Glass` and `glass-baseline`.
+- The reference harness uses the correct horizontal Gerstner amplitude, exposes honest `Reference Geometry` and `Candidate Production` modes, and isolates its Glass mesh from production material restyling.
+- Buoyancy now uses the corrected `bodyUp:Cross(desiredUp)` sign, inertia-aware `AngularAccelerationToTorque`, shorter payload convergence, and independent vertical-lift/torque limits.
+- ShipRegistry handles every seat, per-occupant collision state, SeatWeld/assembly-root lifecycle ownership events, and independent restoration.
+- The live DriverSeat weld was restored and enabled after inspection found it disabled.
+
 ## Remaining blocker
 
 Repeated attempts to start Play through Studio MCP and the normal F5 path return:

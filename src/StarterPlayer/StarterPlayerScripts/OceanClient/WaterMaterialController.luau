@@ -83,7 +83,8 @@ function WaterMaterialController.new(runtime)
     materialCandidateConnection = nil,
     assetFetchFailedConnection = nil,
     surfaces = {},
-    candidate = "PBR",
+    candidate = "Glass",
+    requestedCandidate = "Glass",
     applying = false,
     materialVariant = "OceanWater",
     manifestVersion = "",
@@ -101,7 +102,7 @@ function WaterMaterialController.new(runtime)
     warnedMissingVariant = false,
   }, WaterMaterialController)
   local configuredCandidate = runtime:GetAttribute("OceanMaterialCandidate")
-  if configuredCandidate == "Glass" then self.candidate = "Glass" end
+  if configuredCandidate == "PBR" then self.requestedCandidate = "PBR" end
   self:_RefreshManifest()
   return self
 end
@@ -119,15 +120,17 @@ end
 function WaterMaterialController:_PublishManifest(values)
   local runtime = self.runtime
   runtime:SetAttribute("OceanMaterialCandidate", self.candidate)
-  runtime:SetAttribute("OceanMaterialPath", "MaterialVariant")
-  runtime:SetAttribute("OceanMaterialVariant", self.materialVariant)
+  runtime:SetAttribute("OceanMaterialRequestedCandidate", self.requestedCandidate)
+  runtime:SetAttribute("OceanMaterialPath", self.candidate == "PBR" and "MaterialVariant" or "Glass")
+  runtime:SetAttribute("OceanMaterialVariant", self.candidate == "PBR" and self.materialVariant or "")
   runtime:SetAttribute("OceanMaterialManifestVersion", self.manifestVersion)
   runtime:SetAttribute("OceanMaterialManifestSource", self.manifestSource)
   runtime:SetAttribute("OceanMaterialManifestSlot", self.manifestSlot)
-  runtime:SetAttribute("OceanMaterialUVSpace", UV_SPACE)
-  runtime:SetAttribute("OceanMaterialWorldLockedUV", true)
-  runtime:SetAttribute("OceanMaterialUVTileScale", self.tileScale)
-  runtime:SetAttribute("OceanMaterialUVFormula", "MaterialVariant.StudsPerTile")
+  runtime:SetAttribute("OceanMaterialUVSpace", self.candidate == "PBR" and UV_SPACE or "None")
+  runtime:SetAttribute("OceanMaterialWorldLockedUV", self.candidate == "PBR")
+  runtime:SetAttribute("OceanMaterialUVTileScale", self.candidate == "PBR" and self.tileScale or 0)
+  runtime:SetAttribute("OceanMaterialUVFormula", self.candidate == "PBR" and "MaterialVariant.StudsPerTile" or "None")
+  runtime:SetAttribute("OceanMaterialPhaseStatus", self.candidate == "Glass" and "stable-asset-free" or "unmeasured-pbr")
   runtime:SetAttribute("OceanMaterialTintProperty", "MeshPart.Color")
   runtime:SetAttribute("OceanMaterialAlphaMode", "Opaque")
   runtime:SetAttribute("OceanMaterialActiveRoughness", values.roughness)
@@ -139,11 +142,11 @@ function WaterMaterialController:_PublishManifest(values)
     runtime:SetAttribute("OceanMaterialConfigured" .. role .. "Id", assetId)
     runtime:SetAttribute("OceanMaterialActive" .. role .. "Id", assetId)
   end
-  local variant = MaterialService:FindFirstChild(self.materialVariant)
+  local variant = self.candidate == "PBR" and MaterialService:FindFirstChild(self.materialVariant) or nil
   local variantPresent = variant and variant:IsA("MaterialVariant")
   runtime:SetAttribute("OceanMaterialVariantPresent", variantPresent == true)
-  runtime:SetAttribute("OceanMaterialMapBinding", variantPresent and "surfaceappearance-manifest" or "missing_variant")
-  runtime:SetAttribute("OceanMaterialValidationStatus", variantPresent and "pixel-inspected" or "error")
+  runtime:SetAttribute("OceanMaterialMapBinding", self.candidate == "Glass" and "not-used-glass" or (variantPresent and "materialvariant-manifest" or "missing_variant"))
+  runtime:SetAttribute("OceanMaterialValidationStatus", self.candidate == "Glass" and "glass-baseline" or (variantPresent and self.assetFetchStatus == "ok" and "validated-pbr" or "pbr-pending"))
 end
 
 function WaterMaterialController:_HandleAssetFetchFailed(assetId)
@@ -181,6 +184,14 @@ end
 
 function WaterMaterialController:_RegisterSurface(child: Instance)
   if not isWaterSurface(child) then return end
+  if child.Name == "OceanReferenceGeometry_50x50" then
+    child.Material = Enum.Material.Glass
+    child.MaterialVariant = ""
+    child.Reflectance = 0.12
+    child.Color = Color3.fromRGB(17, 84, 101)
+    self.surfaces[child] = nil
+    return
+  end
   self.surfaces[child] = true
   local variant = MaterialService:FindFirstChild(self.materialVariant)
   local variantPresent = variant and variant:IsA("MaterialVariant")
@@ -279,10 +290,13 @@ function WaterMaterialController:SetCandidate(candidate: string)
   if candidate ~= "PBR" and candidate ~= "Glass" then
     return false, "unknown material candidate"
   end
-  self.candidate = candidate
-  if self.current then
-    self:_ApplyVisual(self.current, "material candidate")
+  self.requestedCandidate = candidate
+  if candidate == "PBR" and self.assetFetchStatus ~= "ok" then
+    self.runtime:SetAttribute("OceanMaterialValidationStatus", "pbr-pending")
+    return false, "PBR assets are not confirmed"
   end
+  self.candidate = candidate
+  if self.current then self:_ApplyVisual(self.current, "material candidate") end
   return true
 end
 
@@ -313,13 +327,41 @@ function WaterMaterialController:Start()
   if self.current then self:_ApplyVisual(self.current, "start") end
   task.spawn(function()
     local ids = {}
-    for _, assetId in pairs(self.maps) do if assetId ~= "" then table.insert(ids, assetId) end end
-    if #ids > 0 then
-      local ok = pcall(function() ContentProvider:PreloadAsync(ids) end)
-      if ok and self.assetFetchStatus == "pending" then
-        self.assetFetchStatus = "ok"
-        self.runtime:SetAttribute("OceanMaterialAssetFetchStatus", "ok")
+    for _, assetId in pairs(self.maps) do
+      if assetId ~= "" then table.insert(ids, assetId) end
+    end
+    if #ids == 0 then
+      self.assetFetchStatus = "not-required"
+      self.runtime:SetAttribute("OceanMaterialAssetFetchStatus", self.assetFetchStatus)
+      return
+    end
+    local callbackStatuses = {}
+    local ok, reason = pcall(function()
+      ContentProvider:PreloadAsync(ids, function(assetId, status)
+        callbackStatuses[normalizeAssetId(assetId)] = tostring(status)
+      end)
+    end)
+    local allSuccess = ok
+    for role, assetId in pairs(self.maps) do
+      if assetId ~= "" then
+        local statusOk, status = pcall(function() return ContentProvider:GetAssetFetchStatus(assetId) end)
+        local statusName = statusOk and tostring(status) or "error"
+        self.runtime:SetAttribute("OceanMaterialAssetStatus_" .. role, statusName)
+        allSuccess = allSuccess and statusOk and status == Enum.AssetFetchStatus.Success
       end
+    end
+    if allSuccess then
+      self.assetFetchStatus = "ok"
+      self.runtime:SetAttribute("OceanMaterialAssetFetchStatus", "ok")
+      if self.requestedCandidate == "PBR" then
+        self.candidate = "PBR"
+        if self.current then self:_ApplyVisual(self.current, "validated PBR assets") end
+      end
+    else
+      self.assetFetchStatus = ok and "pending" or "failed"
+      self.runtime:SetAttribute("OceanMaterialAssetFetchStatus", self.assetFetchStatus)
+      self.runtime:SetAttribute("OceanMaterialValidationStatus", self.candidate == "Glass" and "glass-fallback" or "pbr-pending")
+      if not ok then self.runtime:SetAttribute("OceanMaterialPreloadError", tostring(reason)) end
     end
   end)
 end

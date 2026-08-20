@@ -23,7 +23,7 @@ local waves = {
 for _, wave in ipairs(waves) do
   wave.waveNumber = TWO_PI / wave.wavelength
   wave.amplitude = wave.steepness / wave.waveNumber
-  wave.horizontalAmplitude = wave.amplitude * wave.steepness
+  wave.horizontalAmplitude = wave.amplitude
   wave.angularFrequency = math.sqrt(35.04 * wave.waveNumber)
 end
 
@@ -126,8 +126,8 @@ function Harness:_Build()
 end
 
 function Harness:SetMode(mode: string)
-  if mode ~= "Reference Geometry" and mode ~= "Candidate Production" and mode ~= "Current Main" then
-    return false, "unknown harness mode"
+  if mode ~= "Reference Geometry" and mode ~= "Candidate Production" then
+    return false, "unknown harness mode; Current Main removed because it aliases production"
   end
   self.mode = mode
   if self.part then self.part.Transparency = mode == "Reference Geometry" and 0 or 1 end
@@ -166,7 +166,7 @@ function Harness:_Update(serverTime: number)
     self.colorValues[index] = colorRamp(displacement.Y)
     self.mesh:SetPosition(self.vertices[index], self.positions[index])
     self.mesh:SetNormal(self.normals[index], normal)
-    self.mesh:SetColor(self.colors[index], self.colorValues[index], 1)
+    self.mesh:SetColor(self.colors[index], self.colorValues[index])
   end
 end
 

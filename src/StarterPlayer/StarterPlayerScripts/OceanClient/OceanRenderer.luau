@@ -88,16 +88,15 @@ local function setMeshPartProperties(part: MeshPart, runtime: Folder)
   part.CastShadow = false
   part.Massless = true
   part.DoubleSided = true
-  part.Material = Enum.Material.SmoothPlastic
-  part.MaterialVariant = materialVariantName()
+  part.Material = Enum.Material.Glass
+  part.MaterialVariant = ""
   part.Color = BASE_COLOR
-  part.Reflectance = 0.04
+  part.Reflectance = 0.12
   part.Transparency = 0
-  -- MaterialVariant supplies normal/roughness/metalness; an empty ColorMap
-  -- must not create a white SurfaceAppearance over MeshPart.Color.
+  -- Asset-free Glass is the guaranteed clean-start material.
   if runtime:GetAttribute("OceanMaterialPath") == nil then
-    self.runtime:SetAttribute("OceanMaterialPath", "MaterialVariant")
-    runtime:SetAttribute("OceanUVSpace", "MaterialVariant.StudsPerTile")
+    runtime:SetAttribute("OceanMaterialPath", "Glass")
+    runtime:SetAttribute("OceanUVSpace", "None")
     runtime:SetAttribute("OceanWorldLockedUV", true)
   end
 end
@@ -108,12 +107,12 @@ local function setStaticPartProperties(part: Part)
   part.CanTouch = false
   part.CanQuery = false
   part.CastShadow = false
-  part.Material = Enum.Material.SmoothPlastic
-  part.MaterialVariant = materialVariantName()
-  part.Reflectance = 0.04
+  part.Material = Enum.Material.Glass
+  part.MaterialVariant = ""
+  part.Reflectance = 0.12
   part.Transparency = 0
-end
 
+end
 local function componentBound(state): number
   local bound = 0
   for _, bank in ipairs({state.bankA, state.bankB}) do
@@ -261,6 +260,7 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
   local colors = {}
   local labelsX = {}
   local labelsZ = {}
+  local faces = {}
   local triangleCount = 0
 
   local function getVertex(x: number, z: number): number
@@ -279,18 +279,15 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     labelsZ[index] = z
     return index
   end
-  local colorFaceAvailable = true
   local function addFace(a: number, b: number, c: number)
     local face = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
-    if colorFaceAvailable then
-      local ok = pcall(function()
-        mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
-      end)
-      if not ok then
-        colorFaceAvailable = false
-        self.runtime:SetAttribute("OceanVertexColorError", "SetFaceColors unavailable")
-      end
-    end
+    mesh:SetFaceNormals(face, {normals[a], normals[b], normals[c]})
+    mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
+    local actualNormals = mesh:GetFaceNormals(face)
+    local actualColors = mesh:GetFaceColors(face)
+    assert(actualNormals[1] == normals[a] and actualNormals[2] == normals[b] and actualNormals[3] == normals[c], "face normal IDs mismatch")
+    assert(actualColors[1] == colors[a] and actualColors[2] == colors[b] and actualColors[3] == colors[c], "face color IDs mismatch")
+    table.insert(faces, face)
   end
 
   local function edgeIsHole(i: number, j: number): boolean
@@ -362,6 +359,7 @@ function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: num
     vertices = vertices,
     normals = normals,
     colors = colors,
+    faces = faces,
     labelsX = labelsX,
     labelsZ = labelsZ,
     labelIndex = vertexMap,
@@ -424,6 +422,7 @@ function OceanRenderer:_BuildRectMesh(
   local labelsX = {}
   local labelsZ = {}
   local vertexMap = {}
+  local faces = {}
   local triangleCount = 0
   local function getVertex(x: number, z: number): number
     local mapKey = keyOf(x, z)
@@ -441,18 +440,15 @@ function OceanRenderer:_BuildRectMesh(
     labelsZ[index] = z
     return index
   end
-  local colorFaceAvailable = true
   local function addFace(a: number, b: number, c: number)
     local face = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
-    if colorFaceAvailable then
-      local ok = pcall(function()
-        mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
-      end)
-      if not ok then
-        colorFaceAvailable = false
-        self.runtime:SetAttribute("OceanVertexColorError", "SetFaceColors unavailable")
-      end
-    end
+    mesh:SetFaceNormals(face, {normals[a], normals[b], normals[c]})
+    mesh:SetFaceColors(face, {colors[a], colors[b], colors[c]})
+    local actualNormals = mesh:GetFaceNormals(face)
+    local actualColors = mesh:GetFaceColors(face)
+    assert(actualNormals[1] == normals[a] and actualNormals[2] == normals[b] and actualNormals[3] == normals[c], "transition face normal IDs mismatch")
+    assert(actualColors[1] == colors[a] and actualColors[2] == colors[b] and actualColors[3] == colors[c], "transition face color IDs mismatch")
+    table.insert(faces, face)
   end
 
   for iz = 0, zCount - 1 do
@@ -490,6 +486,7 @@ function OceanRenderer:_BuildRectMesh(
     vertices = vertices,
     normals = normals,
     colors = colors,
+    faces = faces,
     labelsX = labelsX,
     labelsZ = labelsZ,
     labelIndex = vertexMap,
@@ -846,7 +843,7 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, pl
     local colorOk = pcall(function()
       for sequence = 1, updateCount do
         local index = updateIndices and updateIndices[sequence] or sequence
-        ring.mesh:SetColor(ring.colors[index], ring.colorValues[index], 1)
+        ring.mesh:SetColor(ring.colors[index], ring.colorValues[index])
       end
     end)
     if not colorOk then
