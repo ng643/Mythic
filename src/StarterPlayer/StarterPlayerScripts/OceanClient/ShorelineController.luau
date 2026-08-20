@@ -2,12 +2,13 @@
 
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local ShorelineController = {}
 ShorelineController.__index = ShorelineController
 
-function ShorelineController.new(waveField, runtime)
-  return setmetatable({waveField = waveField, runtime = runtime, emitters = {}, connection = nil}, ShorelineController)
+function ShorelineController.new(waveField, runtime, scheduler)
+  return setmetatable({waveField = waveField, runtime = runtime, scheduler = scheduler, emitters = {}, connection = nil, accumulator = 0}, ShorelineController)
 end
 
 function ShorelineController:_Clear()
@@ -55,27 +56,40 @@ end
 function ShorelineController:Start()
   if self.connection then return end
   self:_Build()
-  self.connection = RunService.RenderStepped:Connect(function()
+  self.connection = RunService.RenderStepped:Connect(function(dt)
     if self.runtime:GetAttribute("OceanShorelineEnabled") ~= true then
       for _, entry in ipairs(self.emitters) do entry.emitter.Enabled = false end
       return
     end
     if #self.emitters == 0 then return end
+    self.accumulator += dt
+    if self.accumulator < 0.125 then return end
+    self.accumulator = 0
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    debug.profilebegin("Ocean/Shoreline")
     local now = self.waveField:GetSynchronizedTime()
     for _, entry in ipairs(self.emitters) do
       if not entry.point.Parent then
         entry.emitter.Enabled = false
       else
         local position = entry.point.WorldPosition
-        local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(position.X, position.Z), now)
-        entry.anchor.CFrame = CFrame.new(sample.position + sample.normal * 0.06)
-        entry.emitter.Enabled = true
-        if now - entry.lastEmit > 0.45 and sample.foam > 0.08 then
-          entry.emitter:Emit(math.clamp(math.floor(sample.foam * 3) + 1, 1, 5))
-          entry.lastEmit = now
+        if (position - camera.CFrame.Position).Magnitude > 320 then
+          entry.emitter.Enabled = false
+        else
+          local sample = self.scheduler
+            and self.scheduler:Sample(Vector2.new(position.X, position.Z), now, {inverseIterations = 3, includeEvents = false})
+            or self.waveField:SampleForGameplayWorldXZ(Vector2.new(position.X, position.Z), now, {inverseIterations = 3, includeEvents = false})
+          entry.anchor.CFrame = CFrame.lookAt(sample.position + sample.normal * 0.06, sample.position + sample.normal * 0.06 + sample.normal, sample.normal)
+          entry.emitter.Enabled = true
+          if now - entry.lastEmit > 0.45 and sample.foam > 0.08 then
+            entry.emitter:Emit(math.clamp(math.floor(sample.foam * 3) + 1, 1, 5))
+            entry.lastEmit = now
+          end
         end
       end
     end
+    debug.profileend()
   end)
 end
 

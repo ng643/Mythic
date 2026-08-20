@@ -2,11 +2,16 @@
   "$className": "Configuration",
   "$attributes": {
     "MaterialVariant": "OceanWater",
-    "ManifestVersion": "OceanWaterStable.v1",
+    "ManifestVersion": "OceanWaterRecovery.v1",
     "AuthoritativeSource": "MaterialService.OceanWater",
-    "AuthoringInspection": "Studio Edit DataModel property inspection",
+    "AuthoringInspection": "Studio pixel inspection: ColorMap rejected as photo-like/high-contrast; neutral albedo omitted",
     "TextureConvention": "NormalMap tangent-space OpenGL; Metalness black; Roughness grayscale",
     "TextureOwnership": "Experience-owned generated material assets",
-    "StudsPerTile": 10
+    "ColorMap": "",
+    "NormalMap": "rbxassetid://130080234654600",
+    "RoughnessMap": "rbxassetid://96754332370971",
+    "MetalnessMap": "rbxassetid://75597455436930",
+    "MaterialPattern": "Regular",
+    "StudsPerTile": 96
   }
 }

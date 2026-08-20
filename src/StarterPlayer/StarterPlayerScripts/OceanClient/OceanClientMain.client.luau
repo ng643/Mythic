@@ -62,6 +62,7 @@ local WakeController = require(clientFolder.WakeController)
 local SwimmingController = require(clientFolder.SwimmingController)
 local BuoyancyVisualizer = require(clientFolder.BuoyancyVisualizer)
 local ShorelineController = require(clientFolder.ShorelineController)
+local VisualSampleScheduler = require(clientFolder.VisualSampleScheduler)
 
 clearCapabilityLab(runtime)
 hidePlaceholderBaseplate()
@@ -86,29 +87,30 @@ for _, debugName in ipairs({"OceanDebugBuoyancy", "OceanDebugSeams", "OceanDebug
   if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, false) end
 end
 local qualityOverride = runtime:GetAttribute("OceanQualityOverride")
-local requestedQuality = type(qualityOverride) == "string" and qualityOverride or "High"
+local requestedQuality = type(qualityOverride) == "string" and qualityOverride or "Medium"
 local requestedProfile = QualityProfiles.Get(requestedQuality)
 local validRequestedQuality = requestedQuality == "Ultra"
   or requestedQuality == "High"
   or requestedQuality == "Medium"
   or requestedQuality == "Low"
 if not validRequestedQuality or requestedQuality == "Fallback" or not requestedProfile or requestedProfile.resolution == 0 then
-  requestedQuality = "High"
+  requestedQuality = "Medium"
   runtime:SetAttribute("OceanQualityOverrideRejected", true)
 end
 
 local clock = OceanClock.new(initialState.epochServerTime)
 local waveField = WaveField.new(initialState, clock)
+local visualSamples = VisualSampleScheduler.new(waveField)
 local renderer = OceanRenderer.new(waveField)
 local materialController = WaterMaterialController.new(runtime)
 local qualityController = OceanQualityController.new(renderer, runtime)
-local underwaterController = UnderwaterController.new(waveField, runtime)
-local foamController = FoamController.new(waveField, runtime)
-local sprayController = SprayController.new(waveField, runtime)
-local wakeController = WakeController.new(runtime, waveField)
-local swimmingController = SwimmingController.new(waveField, runtime)
+local underwaterController = UnderwaterController.new(waveField, runtime, visualSamples)
+local foamController = FoamController.new(waveField, runtime, visualSamples)
+local sprayController = SprayController.new(waveField, runtime, visualSamples)
+local wakeController = WakeController.new(runtime, waveField, visualSamples)
+local swimmingController = SwimmingController.new(waveField, runtime, visualSamples)
 local buoyancyVisualizer = BuoyancyVisualizer.new(waveField, runtime)
-local shorelineController = ShorelineController.new(waveField, runtime)
+local shorelineController = ShorelineController.new(waveField, runtime, visualSamples)
 local qualityAttributeConnection = nil
 local stateConnection = nil
 local startedStops = {}
@@ -178,6 +180,8 @@ qualityAttributeConnection = runtime:GetAttributeChangedSignal("OceanQuality"):C
 stateConnection = stateChanged.OnClientEvent:Connect(function(nextState)
   if type(nextState) == "table" then
     waveField:SetState(nextState)
+    if swimmingController.Invalidate then swimmingController:Invalidate() end
+    if underwaterController.Invalidate then underwaterController:Invalidate() end
     materialController:Apply(nextState)
   end
 end)
@@ -192,15 +196,22 @@ task.spawn(function()
     runtime:SetAttribute("OceanRingCount", stats.ringCount)
     runtime:SetAttribute("OceanRequestedRingCount", stats.requestedRingCount)
     runtime:SetAttribute("OceanHorizonTileCount", stats.horizonTileCount)
+    runtime:SetAttribute("OceanTransitionCount", stats.transitionCount)
     runtime:SetAttribute("OceanSeamMaxPositionError", stats.seamPositionError)
     runtime:SetAttribute("OceanSeamMaxNormalError", stats.seamNormalError)
     runtime:SetAttribute("OceanTopologyStatus", stats.topologyStatus)
     runtime:SetAttribute("OceanBatchAvailable", stats.batchAvailable)
-    runtime:SetAttribute("OceanVertexCount", stats.vertexCount)
-    runtime:SetAttribute("OceanTriangleCount", stats.triangleCount)
+    runtime:SetAttribute("OceanBatchFailureReason", stats.batchFailureReason)
+    runtime:SetAttribute("OceanVertexCount", stats.vertexCount + stats.transitionVertexCount)
+    runtime:SetAttribute("OceanTriangleCount", stats.triangleCount + stats.transitionTriangleCount)
+    runtime:SetAttribute("OceanNearVertexCount", stats.vertexCount)
+    runtime:SetAttribute("OceanNearTriangleCount", stats.triangleCount)
     runtime:SetAttribute("OceanFrameMs", stats.lastFrameMs)
     runtime:SetAttribute("OceanOceanMs", stats.lastOceanMs)
     runtime:SetAttribute("OceanUpdateMs", stats.lastUpdateMs)
+    runtime:SetAttribute("OceanWaveEvaluateMs", stats.lastWaveEvaluateMs)
+    runtime:SetAttribute("OceanVertexCommitMs", stats.lastVertexCommitMs)
+    runtime:SetAttribute("OceanNormalCommitMs", stats.lastNormalCommitMs)
     runtime:SetAttribute("OceanUVUpdateMs", stats.lastUVUpdateMs)
     runtime:SetAttribute("OceanFallback", stats.fallback)
   end

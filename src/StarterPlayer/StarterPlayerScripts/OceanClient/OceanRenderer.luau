@@ -5,28 +5,20 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
-local Config = require(game.ReplicatedStorage.Ocean.Shared.OceanConfig)
-local QualityProfiles = require(game.ReplicatedStorage.Ocean.Shared.QualityProfiles)
+local QualityProfiles = require(ReplicatedStorage.Ocean.Shared.QualityProfiles)
+local RenderEvaluator = require(ReplicatedStorage.Ocean.Shared.RenderEvaluator)
 
 local OceanRenderer = {}
 OceanRenderer.__index = OceanRenderer
 
-local DEFAULT_VERTICAL_BOUNDS = 64
 local MAX_EDITABLE_EXTENT = 1900
 local MAX_NEAR_RINGS = 6
+local MAX_INITIAL_VERTICES = 12000
 local MAX_HORIZON_OBJECTS = 64
-local MAX_INITIAL_VERTICES = 24000
-local MAX_RING_FAILURES = 3
-local HORIZON_TILE_MAX_SIZE = 1800
-local HORIZON_REBASE_STUDS = 128
-local UV_TILE_SCALE = 10
 local DEFAULT_HORIZON_RANGE = 6000
-local SEAM_COLORS = {
-  Color3.fromRGB(255, 90, 90),
-  Color3.fromRGB(90, 190, 255),
-  Color3.fromRGB(130, 255, 130),
-  Color3.fromRGB(255, 220, 100),
-}
+local HORIZON_TILE_MAX_SIZE = 1800
+local MAX_VERTICAL_BOUNDS = 96
+local BASE_COLOR = Color3.fromRGB(224, 238, 240)
 
 local function smoothstep(value: number): number
   local t = math.clamp(value, 0, 1)
@@ -37,21 +29,47 @@ local function keyOf(x: number, z: number): string
   return string.format("%.3f:%.3f", x, z)
 end
 
-local function worldUV(worldXZ: Vector2): Vector2
-  return Vector2.new(worldXZ.X / UV_TILE_SCALE, worldXZ.Y / UV_TILE_SCALE)
+local function finiteVector(value: Vector3): boolean
+  return value.X == value.X and value.Y == value.Y and value.Z == value.Z
+    and value.X > -math.huge and value.X < math.huge
+    and value.Y > -math.huge and value.Y < math.huge
+    and value.Z > -math.huge and value.Z < math.huge
 end
+
 local function materialVariantName(): string
-  local ocean = ReplicatedStorage:FindFirstChild("Ocean")
-  local assets = ocean and ocean:FindFirstChild("Assets")
-  local appearances = assets and assets:FindFirstChild("WaterAppearances")
-  local slot = appearances and appearances:FindFirstChild("OceanWaterPBR")
+  local slot = ReplicatedStorage.Ocean.Assets.WaterAppearances:FindFirstChild("OceanWaterPBR")
   local value = slot and slot:GetAttribute("MaterialVariant")
-  return type(value) == "string" and value or ""
+  return type(value) == "string" and value or "OceanWater"
 end
 
+local function waterMaps()
+  local slot = ReplicatedStorage.Ocean.Assets.WaterAppearances:FindFirstChild("OceanWaterPBR")
+  return {
+    ColorMap = slot and slot:GetAttribute("ColorMap") or "",
+    NormalMap = slot and slot:GetAttribute("NormalMap") or "",
+    RoughnessMap = slot and slot:GetAttribute("RoughnessMap") or "",
+    MetalnessMap = slot and slot:GetAttribute("MetalnessMap") or "",
+  }
+end
 
+local function applySurfaceAppearance(part: MeshPart)
+  local maps = waterMaps()
+  local surface = part:FindFirstChild("OceanSurfaceAppearance")
+  if not surface or not surface:IsA("SurfaceAppearance") then
+    surface = Instance.new("SurfaceAppearance")
+    surface.Name = "OceanSurfaceAppearance"
+    surface.Parent = part
+  end
+  pcall(function()
+    surface.AlphaMode = Enum.AlphaMode.Opaque
+    surface.ColorMap = maps.ColorMap
+    surface.NormalMap = maps.NormalMap
+    surface.RoughnessMap = maps.RoughnessMap
+    surface.MetalnessMap = maps.MetalnessMap
+  end)
+end
 
-local function setOceanPartProperties(part: MeshPart, runtime: Folder)
+local function setMeshPartProperties(part: MeshPart, runtime: Folder)
   part.Anchored = true
   part.CanCollide = false
   part.CanTouch = false
@@ -61,71 +79,40 @@ local function setOceanPartProperties(part: MeshPart, runtime: Folder)
   part.DoubleSided = true
   part.Material = Enum.Material.SmoothPlastic
   part.MaterialVariant = materialVariantName()
-  part.Color = Color3.fromRGB(5, 62, 86)
+  part.Color = BASE_COLOR
+  part.Reflectance = 0
+  part.Transparency = 0
+  applySurfaceAppearance(part)
+  if runtime:GetAttribute("OceanMaterialPath") == nil then
+    runtime:SetAttribute("OceanMaterialPath", "SurfaceAppearance+MaterialVariant")
+    runtime:SetAttribute("OceanUVSpace", "MaterialVariant.StudsPerTile")
+    runtime:SetAttribute("OceanWorldLockedUV", true)
+  end
+end
+
+local function setStaticPartProperties(part: Part)
+  part.Anchored = true
+  part.CanCollide = false
+  part.CanTouch = false
+  part.CanQuery = false
+  part.CastShadow = false
+  part.Material = Enum.Material.SmoothPlastic
+  part.MaterialVariant = materialVariantName()
+  part.Color = BASE_COLOR
   part.Reflectance = 0
   part.Transparency = 0
 end
 
-local function setFaceUVs(mesh, faceId: number, ids: {number}, runtime: Folder)
-  local ok, reason = pcall(function()
-    mesh:SetFaceUVs(faceId, ids)
-  end)
-  if not ok and runtime:GetAttribute("OceanUVError") == nil then
-    local message = tostring(reason)
-    runtime:SetAttribute("OceanUVError", message)
-    warn("OceanRenderer | face UV assignment failed | " .. message)
-  end
-end
-
-local function isFinite(value: number): boolean
-  return value == value and value > -math.huge and value < math.huge
-end
-
-local function isFiniteVector3(value: Vector3): boolean
-  return isFinite(value.X) and isFinite(value.Y) and isFinite(value.Z)
-end
-
-local function isSafeNormal(value: Vector3): boolean
-  if not isFiniteVector3(value) then return false end
-  local magnitude = value.Magnitude
-  return isFinite(magnitude) and magnitude >= 0.5 and magnitude <= 1.5
-end
-
-local function recordRingFailure(ring, runtime: Folder, reason: any)
-  ring.failureCount = (ring.failureCount or 0) + 1
-  ring.lastError = tostring(reason)
-  if ring.failureCount >= MAX_RING_FAILURES then
-    ring.frozen = true
-  end
-  runtime:SetAttribute("OceanRingFailureLevel", ring.level)
-  runtime:SetAttribute("OceanRingFailureCount", ring.failureCount)
-  runtime:SetAttribute("OceanRingFailureReason", ring.lastError)
-  runtime:SetAttribute("OceanRingFrozen", ring.frozen == true)
-  if ring.failureCount == 1 or ring.frozen then
-    warn(string.format("OceanRenderer | ring mutation skipped | level=%d | count=%d | %s", ring.level, ring.failureCount, ring.lastError))
-  end
-end
-
 local function componentBound(state): number
   local bound = 0
-  for _, component in ipairs(state.bankA) do
-    bound += math.abs(component.amplitude)
-  end
-  for _, component in ipairs(state.bankB) do
-    bound = math.max(bound, math.abs(component.amplitude))
+  for _, bank in ipairs({state.bankA, state.bankB}) do
+    local bankBound = 0
+    for _, component in ipairs(bank) do
+      bankBound += math.abs(component.amplitude)
+    end
+    bound = math.max(bound, bankBound)
   end
   return bound
-end
-
-local function makeIntervals(minimum: number, maximum: number, maxWidth: number): {{number}}
-  local intervals = {}
-  local cursor = minimum
-  while cursor < maximum - 0.01 do
-    local finish = math.min(cursor + maxWidth, maximum)
-    table.insert(intervals, {cursor, finish})
-    cursor = finish
-  end
-  return intervals
 end
 
 function OceanRenderer.new(waveField)
@@ -136,40 +123,49 @@ function OceanRenderer.new(waveField)
     runtime.Parent = Workspace
   end
   for _, child in ipairs(runtime:GetChildren()) do
-    local name = child.Name
-    if string.sub(name, 1, 14) == "OceanClipmap_L"
-      or string.sub(name, 1, 13) == "OceanHorizon_"
-      or name == "OceanFallbackSurface"
-      or string.sub(name, 1, 18) == "OceanLOD_Boundary_" then
+    if string.sub(child.Name, 1, 14) == "OceanClipmap_L"
+      or string.sub(child.Name, 1, 16) == "OceanTransition_"
+      or string.sub(child.Name, 1, 13) == "OceanHorizon_"
+      or child.Name == "OceanFallbackSurface" then
       child:Destroy()
     end
   end
+
   return setmetatable({
     waveField = waveField,
     runtime = runtime,
     qualityName = "High",
     profile = QualityProfiles.Get("High"),
-    topologySpacing = QualityProfiles.Get("High").spacing,
+    topologySpacing = 4,
     rings = {},
+    transition = nil,
+    transitions = {},
     horizonTiles = {},
-    generation = 0,
-    seamTimer = 0,
+    fallback = nil,
+    running = false,
     visible = true,
     baseVisible = true,
+    farVisible = true,
     connection = nil,
-    fallback = nil,
-    horizonAnchor = Vector2.new(math.huge, math.huge),
+    generation = 0,
+    horizonAnchor = Vector2.zero,
     horizonAccumulator = 0,
-    debugParts = {},
     debugSeams = false,
+    seamTimer = 0,
     stats = {
       vertexCount = 0,
       triangleCount = 0,
       horizonTileCount = 0,
+      transitionVertexCount = 0,
+      transitionTriangleCount = 0,
+      transitionCount = 0,
       lastFrameMs = 0,
       lastOceanMs = 0,
       lastUpdateMs = 0,
       lastUVUpdateMs = 0,
+      lastWaveEvaluateMs = 0,
+      lastVertexCommitMs = 0,
+      lastNormalCommitMs = 0,
       ringCount = 0,
       requestedRingCount = 0,
       seamPositionError = 0,
@@ -181,16 +177,18 @@ function OceanRenderer.new(waveField)
       ringFailureCount = 0,
       meshGeneration = 0,
       batchAvailable = false,
+      batchFailureReason = "client-singular-setter-benchmarked",
     },
-    serverTime = 0,
   }, OceanRenderer)
 end
 
 function OceanRenderer:_PublishStats()
+  if self.runtime:GetAttribute("OceanDebugMetrics") ~= true then return end
   local stats = self.stats
   self.runtime:SetAttribute("OceanRingCount", stats.ringCount)
   self.runtime:SetAttribute("OceanRequestedRingCount", stats.requestedRingCount)
   self.runtime:SetAttribute("OceanHorizonTileCount", stats.horizonTileCount)
+  self.runtime:SetAttribute("OceanTransitionCount", stats.transitionCount)
   self.runtime:SetAttribute("OceanSeamSampleCount", stats.seamSampleCount)
   self.runtime:SetAttribute("OceanHorizonFailed", stats.horizonFailed)
   self.runtime:SetAttribute("OceanRingFailureCount", stats.ringFailureCount)
@@ -199,6 +197,10 @@ function OceanRenderer:_PublishStats()
   self.runtime:SetAttribute("OceanSeamMaxNormalError", stats.seamNormalError)
   self.runtime:SetAttribute("OceanTopologyStatus", stats.topologyStatus)
   self.runtime:SetAttribute("OceanBatchAvailable", stats.batchAvailable)
+  self.runtime:SetAttribute("OceanBatchFailureReason", stats.batchFailureReason)
+  self.runtime:SetAttribute("OceanWaveEvaluateMs", stats.lastWaveEvaluateMs)
+  self.runtime:SetAttribute("OceanVertexCommitMs", stats.lastVertexCommitMs)
+  self.runtime:SetAttribute("OceanNormalCommitMs", stats.lastNormalCommitMs)
 end
 
 function OceanRenderer:_DestroyRings()
@@ -209,161 +211,103 @@ function OceanRenderer:_DestroyRings()
   table.clear(self.rings)
   self.stats.vertexCount = 0
   self.stats.triangleCount = 0
-  self.stats.batchAvailable = false
+end
+
+function OceanRenderer:_DestroyTransition()
+  for _, transition in ipairs(self.transitions or {}) do
+    if transition.part then transition.part:Destroy() end
+    if transition.mesh then transition.mesh:Destroy() end
+  end
+  table.clear(self.transitions or {})
+  self.transition = nil
+  self.stats.transitionCount = 0
+  self.stats.transitionVertexCount = 0
+  self.stats.transitionTriangleCount = 0
 end
 
 function OceanRenderer:_DestroyHorizon()
   for _, tile in ipairs(self.horizonTiles) do
     if tile.part then tile.part:Destroy() end
-    if tile.mesh then tile.mesh:Destroy() end
   end
   table.clear(self.horizonTiles)
   self.stats.horizonTileCount = 0
 end
-function OceanRenderer:_DestroyDebugSeams()
-  for _, group in ipairs(self.debugParts) do
-    for _, part in ipairs(group.parts) do part:Destroy() end
-  end
-  table.clear(self.debugParts)
-  self.debugSeams = false
-  self.runtime:SetAttribute("OceanDebugSeamsActive", false)
-end
 
-function OceanRenderer:_UpdateDebugSeams()
-  local enabled = self.runtime:GetAttribute("OceanDebugSeams") == true
-  if enabled ~= self.debugSeams then
-    self:_DestroyDebugSeams()
-    self.debugSeams = enabled
-    if enabled then
-      for _, ring in ipairs(self.rings) do
-        local color = SEAM_COLORS[ring.level % #SEAM_COLORS + 1]
-        local parts = {}
-        for edge = 1, 4 do
-          local part = Instance.new("Part")
-          part.Name = string.format("OceanLOD_Boundary_L%d_%d", ring.level, edge)
-          part.Anchored = true
-          part.CanCollide = false
-          part.CanTouch = false
-          part.CanQuery = false
-          part.CastShadow = false
-          part.Material = Enum.Material.Neon
-          part.Color = color
-          part.Transparency = 0.15
-          part.Parent = self.runtime
-          table.insert(parts, part)
-        end
-        table.insert(self.debugParts, {ring = ring, parts = parts})
-      end
-    end
-  end
-  if not enabled then return end
-  local seaLevel = self.waveField:GetState().seaLevel
-  for _, group in ipairs(self.debugParts) do
-    local ring = group.ring
-    local extent = ring.outerHalf * ring.spacing
-    local origin = ring.origin
-    local width = extent * 2
-    group.parts[1].Size = Vector3.new(width, 0.06, 0.08)
-    group.parts[1].Position = Vector3.new(origin.X, seaLevel + 0.08, origin.Y - extent)
-    group.parts[2].Size = Vector3.new(width, 0.06, 0.08)
-    group.parts[2].Position = Vector3.new(origin.X, seaLevel + 0.08, origin.Y + extent)
-    group.parts[3].Size = Vector3.new(0.08, 0.06, width)
-    group.parts[3].Position = Vector3.new(origin.X - extent, seaLevel + 0.08, origin.Y)
-    group.parts[4].Size = Vector3.new(0.08, 0.06, width)
-    group.parts[4].Position = Vector3.new(origin.X + extent, seaLevel + 0.08, origin.Y)
-  end
-  self.runtime:SetAttribute("OceanDebugSeamsActive", true)
-end
-
-function OceanRenderer:_CellIncluded(level: number, i: number, j: number, innerHalf: number): boolean
-  if level == 0 then return true end
+function OceanRenderer:_CellIncluded(i: number, j: number, innerHalf: number): boolean
+  if innerHalf <= 0 then return true end
   return math.max(math.abs(i + 0.5), math.abs(j + 0.5)) >= innerHalf
 end
 
-function OceanRenderer:_BuildRing(level: number)
-  local profile = self.profile
-  local spacing = profile.spacing * 2 ^ level
-  local outerHalf = math.floor((profile.resolution - 1) * 0.5)
-  local innerHalf = level == 0 and 0 or outerHalf * 0.5
-  local mesh, meshReason = AssetService:CreateEditableMesh()
-  if not mesh then error("CreateEditableMesh ring failed: " .. tostring(meshReason)) end
+function OceanRenderer:_BuildMesh(name: string, resolution: number, spacing: number, innerHalf: number, kind: string, level: number)
+  local outerHalf = math.floor((resolution - 1) * 0.5)
+  local mesh, reason = AssetService:CreateEditableMesh()
+  if not mesh then error("CreateEditableMesh failed: " .. tostring(reason)) end
+
   local vertexMap = {}
   local vertices = {}
   local normals = {}
-  local uvs = {}
-  local labels = {}
-  local positions = {}
-  local normalValues = {}
+  local labelsX = {}
+  local labelsZ = {}
+  local triangleCount = 0
 
-  local function getVertex(label: Vector2): number
-    local mapKey = keyOf(label.X, label.Y)
+  local function getVertex(x: number, z: number): number
+    local mapKey = keyOf(x, z)
     local existing = vertexMap[mapKey]
     if existing then return existing end
-    local vertexId = mesh:AddVertex(Vector3.new(label.X, 0, label.Y))
+    local vertexId = mesh:AddVertex(Vector3.new(x, 0, z))
     local normalId = mesh:AddNormal(Vector3.yAxis)
-    local uvId = mesh:AddUV(worldUV(label))
     local index = #vertices + 1
     vertexMap[mapKey] = index
     vertices[index] = vertexId
     normals[index] = normalId
-    uvs[index] = uvId
-    labels[index] = label
-    positions[index] = Vector3.new(label.X, 0, label.Y)
-    normalValues[index] = Vector3.yAxis
+    labelsX[index] = x
+    labelsZ[index] = z
     return index
   end
 
   local function edgeIsHole(i: number, j: number): boolean
-    return level > 0 and not self:_CellIncluded(level, i, j, innerHalf)
+    return not self:_CellIncluded(i, j, innerHalf)
   end
 
-  local triangleCount = 0
   for j = -outerHalf, outerHalf - 1 do
     for i = -outerHalf, outerHalf - 1 do
-      if self:_CellIncluded(level, i, j, innerHalf) then
-        local aLabel = Vector2.new(i * spacing, j * spacing)
-        local bLabel = Vector2.new(i * spacing, (j + 1) * spacing)
-        local dLabel = Vector2.new((i + 1) * spacing, (j + 1) * spacing)
-        local cLabel = Vector2.new((i + 1) * spacing, j * spacing)
-        local boundaryEdges = {
+      if self:_CellIncluded(i, j, innerHalf) then
+        local ax, az = i * spacing, j * spacing
+        local bx, bz = i * spacing, (j + 1) * spacing
+        local cx, cz = (i + 1) * spacing, j * spacing
+        local dx, dz = (i + 1) * spacing, (j + 1) * spacing
+        local holeEdges = {
           edgeIsHole(i - 1, j),
           edgeIsHole(i, j + 1),
           edgeIsHole(i + 1, j),
           edgeIsHole(i, j - 1),
         }
-        local hasHoleEdge = boundaryEdges[1] or boundaryEdges[2] or boundaryEdges[3] or boundaryEdges[4]
+        local hasHoleEdge = holeEdges[1] or holeEdges[2] or holeEdges[3] or holeEdges[4]
         if not hasHoleEdge then
-          local a = getVertex(aLabel)
-          local b = getVertex(bLabel)
-          local c = getVertex(cLabel)
-          local d = getVertex(dLabel)
-          local faceOne = mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
-          mesh:SetFaceNormals(faceOne, {normals[a], normals[b], normals[c]})
-          setFaceUVs(mesh, faceOne, {uvs[a], uvs[b], uvs[c]}, self.runtime)
-          local faceTwo = mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
-          mesh:SetFaceNormals(faceTwo, {normals[c], normals[b], normals[d]})
-          setFaceUVs(mesh, faceTwo, {uvs[c], uvs[b], uvs[d]}, self.runtime)
+          local a = getVertex(ax, az)
+          local b = getVertex(bx, bz)
+          local c = getVertex(cx, cz)
+          local d = getVertex(dx, dz)
+          mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
+          mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
           triangleCount += 2
         else
-          local polygon = {aLabel, bLabel, dLabel, cLabel}
-          local labelsForEdges = {{i - 1, j}, {i, j + 1}, {i + 1, j}, {i, j - 1}}
+          local polygon = {{ax, az}, {bx, bz}, {dx, dz}, {cx, cz}}
+          local edgeCells = {{i - 1, j}, {i, j + 1}, {i + 1, j}, {i, j - 1}}
           local expanded = {}
-          for edgeIndex, label in ipairs(polygon) do
+          for polygonIndex, label in ipairs(polygon) do
             table.insert(expanded, label)
-            local neighbor = labelsForEdges[edgeIndex]
-            if edgeIsHole(neighbor[1], neighbor[2]) then
-              local nextLabel = polygon[edgeIndex % #polygon + 1]
-              table.insert(expanded, (label + nextLabel) * 0.5)
+            if edgeIsHole(edgeCells[polygonIndex][1], edgeCells[polygonIndex][2]) then
+              local nextLabel = polygon[polygonIndex % #polygon + 1]
+              table.insert(expanded, {(label[1] + nextLabel[1]) * 0.5, (label[2] + nextLabel[2]) * 0.5})
             end
           end
-          local center = getVertex((aLabel + bLabel + cLabel + dLabel) * 0.25)
+          local center = getVertex((ax + bx + cx + dx) * 0.25, (az + bz + cz + dz) * 0.25)
           for polygonIndex, label in ipairs(expanded) do
             local nextLabel = expanded[polygonIndex % #expanded + 1]
-            local first = getVertex(label)
-            local second = getVertex(nextLabel)
-            local face = mesh:AddTriangle(vertices[center], vertices[first], vertices[second])
-            mesh:SetFaceNormals(face, {normals[center], normals[first], normals[second]})
-            setFaceUVs(mesh, face, {uvs[center], uvs[first], uvs[second]}, self.runtime)
+            local first = getVertex(label[1], label[2])
+            local second = getVertex(nextLabel[1], nextLabel[2])
+            mesh:AddTriangle(vertices[center], vertices[first], vertices[second])
             triangleCount += 1
           end
         end
@@ -372,65 +316,202 @@ function OceanRenderer:_BuildRing(level: number)
   end
 
   local state = self.waveField:GetState()
-  local verticalBound = math.clamp(math.max(DEFAULT_VERTICAL_BOUNDS, componentBound(state) * 2 + 8), 16, 96)
+  local verticalBound = math.clamp(math.max(24, componentBound(state) * 2 + 8), 16, MAX_VERTICAL_BOUNDS)
   mesh:AddVertex(Vector3.new(0, -verticalBound, 0))
   mesh:AddVertex(Vector3.new(0, verticalBound, 0))
   local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
-  part.Name = string.format("OceanClipmap_L%d", level)
-  setOceanPartProperties(part, self.runtime)
-  part.DoubleSided = level == 0
+  part.Name = name
+  setMeshPartProperties(part, self.runtime)
+  part.DoubleSided = kind == "near" and level == 0
   part.Parent = self.runtime
 
-  local fullCap = self.waveField:GetGameplayComponentCap()
-  local nextCap = level + 1 < self.profile.ringCount and math.min(self.profile.waveCap, fullCap) or math.min(6, fullCap)
   local ring = {
+    name = name,
+    kind = kind,
     level = level,
     mesh = mesh,
     part = part,
     vertices = vertices,
     normals = normals,
-    uvs = uvs,
-    labels = labels,
+    labelsX = labelsX,
+    labelsZ = labelsZ,
     labelIndex = vertexMap,
-    positions = positions,
-    normalValues = normalValues,
+    positions = table.create(#vertices),
+    normalValues = table.create(#vertices),
     spacing = spacing,
     outerHalf = outerHalf,
     innerHalf = innerHalf,
+    innerExtent = innerHalf * spacing,
+    outerExtent = outerHalf * spacing,
     origin = Vector2.new(math.huge, math.huge),
     accumulator = 0,
-    cadence = 1 / math.max(profile.nearCadence / 2 ^ level, 3),
-    componentCap = level == 0 and fullCap or math.min(profile.waveCap, fullCap),
-    sharedComponentCap = nextCap,
-    updateNormals = level <= profile.normalRings,
+    cadence = 1 / 30,
+    componentCap = 6,
+    sharedComponentCap = 6,
+    updateNormals = true,
     triangleCount = triangleCount,
-    batchAvailable = false,
-    failed = false,
-    frozen = false,
+    lastCommittedServerTime = -math.huge,
+    lastNormalServerTime = -math.huge,
     failureCount = 0,
-    invalidFrames = 0,
-    lastError = nil,
-    generation = self.generation,
+    frozen = false,
   }
-  pcall(function() ring.batchAvailable = type(mesh.BatchSetValues) == "function" end)
-  self.stats.vertexCount += #vertices
-  self.stats.triangleCount += triangleCount
-  self.stats.batchAvailable = self.stats.batchAvailable or ring.batchAvailable
-  table.insert(self.rings, ring)
+  for index = 1, #vertices do
+    ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
+    ring.normalValues[index] = Vector3.yAxis
+  end
+  return ring
 end
+function OceanRenderer:_BuildRectMesh(
+  name: string,
+  xMin: number,
+  xMax: number,
+  zMin: number,
+  zMax: number,
+  spacing: number,
+  level: number
+)
+  local xCount = math.max(1, math.floor((xMax - xMin) / spacing + 0.5))
+  local zCount = math.max(1, math.floor((zMax - zMin) / spacing + 0.5))
+  xMax = xMin + xCount * spacing
+  zMax = zMin + zCount * spacing
+  local mesh, reason = AssetService:CreateEditableMesh()
+  if not mesh then error("CreateEditableMesh transition failed: " .. tostring(reason)) end
+  local vertices = {}
+  local normals = {}
+  local labelsX = {}
+  local labelsZ = {}
+  local vertexMap = {}
+  local triangleCount = 0
+
+  local function getVertex(x: number, z: number): number
+    local mapKey = keyOf(x, z)
+    local existing = vertexMap[mapKey]
+    if existing then return existing end
+    local vertexId = mesh:AddVertex(Vector3.new(x, 0, z))
+    local normalId = mesh:AddNormal(Vector3.yAxis)
+    local index = #vertices + 1
+    vertexMap[mapKey] = index
+    vertices[index] = vertexId
+    normals[index] = normalId
+    labelsX[index] = x
+    labelsZ[index] = z
+    return index
+  end
+
+  for iz = 0, zCount - 1 do
+    for ix = 0, xCount - 1 do
+      local ax, az = xMin + ix * spacing, zMin + iz * spacing
+      local bx, bz = ax, az + spacing
+      local cx, cz = ax + spacing, az
+      local dx, dz = cx, bz
+      local a = getVertex(ax, az)
+      local b = getVertex(bx, bz)
+      local c = getVertex(cx, cz)
+      local d = getVertex(dx, dz)
+      mesh:AddTriangle(vertices[a], vertices[b], vertices[c])
+      mesh:AddTriangle(vertices[c], vertices[b], vertices[d])
+      triangleCount += 2
+    end
+  end
+
+  local state = self.waveField:GetState()
+  local verticalBound = math.clamp(math.max(24, componentBound(state) * 2 + 8), 16, MAX_VERTICAL_BOUNDS)
+  mesh:AddVertex(Vector3.new(0, -verticalBound, 0))
+  mesh:AddVertex(Vector3.new(0, verticalBound, 0))
+  local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
+  part.Name = name
+  setMeshPartProperties(part, self.runtime)
+  part.DoubleSided = false
+  part.Parent = self.runtime
+
+  local ring = {
+    name = name,
+    kind = "transition",
+    level = level,
+    mesh = mesh,
+    part = part,
+    vertices = vertices,
+    normals = normals,
+    labelsX = labelsX,
+    labelsZ = labelsZ,
+    labelIndex = vertexMap,
+    positions = table.create(#vertices),
+    normalValues = table.create(#vertices),
+    spacing = spacing,
+    outerHalf = 0,
+    innerHalf = 0,
+    innerExtent = self.transitionInnerExtent,
+    outerExtent = self.transitionOuterExtent,
+    origin = Vector2.new(math.huge, math.huge),
+    accumulator = 0,
+    cadence = 1 / 10,
+    componentCap = 6,
+    sharedComponentCap = 6,
+    updateNormals = true,
+    triangleCount = triangleCount,
+    lastCommittedServerTime = -math.huge,
+    lastNormalServerTime = -math.huge,
+    failureCount = 0,
+    frozen = false,
+  }
+  for index = 1, #vertices do
+    ring.positions[index] = Vector3.new(labelsX[index], 0, labelsZ[index])
+    ring.normalValues[index] = Vector3.yAxis
+  end
+  return ring
+end
+
+function OceanRenderer:_BuildTransitionSectors(finalRing)
+  self:_DestroyTransition()
+  local innerExtent = finalRing.outerExtent
+  local width = self.profile.transitionWidth or 768
+  local spacing = self.profile.transitionSpacing or 64
+  local outerExtent = innerExtent + width
+  local innerSteps = math.max(1, math.floor(innerExtent / spacing + 0.5))
+  local outerSteps = math.max(innerSteps + 1, math.ceil(outerExtent / spacing))
+  innerExtent = innerSteps * spacing
+  outerExtent = outerSteps * spacing
+  self.transitionInnerExtent = innerExtent
+  self.transitionOuterExtent = outerExtent
+  self.transitions = {}
+  local specs = {
+    {-innerExtent, innerExtent, innerExtent, outerExtent},
+    {-outerExtent, -innerExtent, innerExtent, outerExtent},
+    {innerExtent, outerExtent, innerExtent, outerExtent},
+    {-innerExtent, innerExtent, -outerExtent, -innerExtent},
+    {-outerExtent, -innerExtent, -outerExtent, -innerExtent},
+    {innerExtent, outerExtent, -outerExtent, -innerExtent},
+    {-outerExtent, -innerExtent, -innerExtent, innerExtent},
+    {innerExtent, outerExtent, -innerExtent, innerExtent},
+  }
+  for index, spec in ipairs(specs) do
+    local sector = self:_BuildRectMesh(
+      string.format("OceanTransition_%d", index),
+      spec[1],
+      spec[2],
+      spec[3],
+      spec[4],
+      spacing,
+      #self.rings
+    )
+    table.insert(self.transitions, sector)
+  end
+  self.transition = self.transitions[1]
+  self.stats.transitionCount = #self.transitions
+  self.stats.transitionVertexCount = 0
+  self.stats.transitionTriangleCount = 0
+  for _, transition in ipairs(self.transitions) do
+    self.stats.transitionVertexCount += #transition.vertices + 2
+    self.stats.transitionTriangleCount += transition.triangleCount
+  end
+end
+
 
 function OceanRenderer:_BuildFallback()
   if self.fallback then return end
   local part = Instance.new("Part")
   part.Name = "OceanFallbackSurface"
-  part.Anchored = true
-  part.CanCollide = false
-  part.CanTouch = false
-  part.CanQuery = false
-  part.CastShadow = false
-  part.Material = Enum.Material.SmoothPlastic
-  part.Color = Color3.fromRGB(5, 62, 86)
-  part.Reflectance = 0
+  setStaticPartProperties(part)
   part.Size = Vector3.new(8192, 0.25, 8192)
   part.Position = Vector3.zero
   part.Transparency = 0.05
@@ -444,425 +525,375 @@ function OceanRenderer:_UseFallback(reason: string)
     warn("OceanRenderer | falling back to static surface: " .. reason)
   end
   self:_DestroyRings()
+  self:_DestroyTransition()
   self:_DestroyHorizon()
   self:_BuildFallback()
 end
 
-function OceanRenderer:_BuildHorizon()
+function OceanRenderer:_BuildHorizon(innerExtent: number)
   self:_DestroyHorizon()
-  local range = math.min(self.profile.horizonRange or DEFAULT_HORIZON_RANGE, DEFAULT_HORIZON_RANGE)
+  local range = math.max(self.profile.horizonRange or DEFAULT_HORIZON_RANGE, innerExtent + 1)
+  range = math.min(range, DEFAULT_HORIZON_RANGE)
   local tileSize = math.min(self.profile.horizonTileSize or HORIZON_TILE_MAX_SIZE, HORIZON_TILE_MAX_SIZE)
-  local finalExtent = 0
-  for _, ring in ipairs(self.rings) do
-    finalExtent = math.max(finalExtent, ring.outerHalf * ring.spacing)
-  end
-  local innerExtent = math.min(math.max(finalExtent, 0), range - 1)
   local seaLevel = self.waveField:GetState().seaLevel
+  local intervals = {}
+  local cursor = -range
+  while cursor < range - 0.01 do
+    local finish = math.min(cursor + tileSize, range)
+    table.insert(intervals, {cursor, finish})
+    cursor = finish
+  end
+  local innerIntervals = {}
+  cursor = -innerExtent
+  while cursor < innerExtent - 0.01 do
+    local finish = math.min(cursor + tileSize, innerExtent)
+    table.insert(innerIntervals, {cursor, finish})
+    cursor = finish
+  end
 
   local function addTile(xMin: number, xMax: number, zMin: number, zMax: number)
+    if #self.horizonTiles >= MAX_HORIZON_OBJECTS then
+      error("horizon object budget exceeded")
+    end
     local width = xMax - xMin
     local depth = zMax - zMin
     if width <= 0.01 or depth <= 0.01 then return end
-    if #self.horizonTiles >= MAX_HORIZON_OBJECTS then
-      error(string.format("horizon object budget exceeded: %d", MAX_HORIZON_OBJECTS))
-    end
     local part = Instance.new("Part")
     part.Name = string.format("OceanHorizon_%d", #self.horizonTiles + 1)
-    part.Anchored = true
-    part.CanCollide = false
-    part.CanTouch = false
-    part.CanQuery = false
-    part.CastShadow = false
-    part.Material = Enum.Material.SmoothPlastic
-    part.MaterialVariant = materialVariantName()
-    part.Color = Color3.fromRGB(5, 62, 86)
-    part.Reflectance = 0
-    part.Transparency = 0
+    setStaticPartProperties(part)
     part.Size = Vector3.new(width, 0.25, depth)
-    part.Position = Vector3.new((xMin + xMax) * 0.5, seaLevel, (zMin + zMax) * 0.5)
+    part.Position = Vector3.new(xMin + width * 0.5, seaLevel, zMin + depth * 0.5)
     part.Parent = self.runtime
     table.insert(self.horizonTiles, {
       part = part,
-      mesh = nil,
-      static = true,
-      center = Vector2.new((xMin + xMax) * 0.5, (zMin + zMax) * 0.5),
-      width = width,
-      depth = depth,
-      origin = Vector2.new(math.huge, math.huge),
-      generation = self.generation,
-      failed = false,
+      center = Vector2.new(xMin + width * 0.5, zMin + depth * 0.5),
     })
   end
 
-  local fullX = makeIntervals(-range, range, tileSize)
-  local middleZ = makeIntervals(-innerExtent, innerExtent, tileSize)
-  local northZ = makeIntervals(innerExtent, range, tileSize)
-  local southZ = makeIntervals(-range, -innerExtent, tileSize)
-  local eastX = makeIntervals(innerExtent, range, tileSize)
-  local westX = makeIntervals(-range, -innerExtent, tileSize)
-
-  for _, xInterval in ipairs(fullX) do
-    for _, zInterval in ipairs(northZ) do
-      addTile(xInterval[1], xInterval[2], zInterval[1], zInterval[2])
-    end
-    for _, zInterval in ipairs(southZ) do
-      addTile(xInterval[1], xInterval[2], zInterval[1], zInterval[2])
+  for _, outer in ipairs(intervals) do
+    for _, north in ipairs(intervals) do
+      if north[1] >= innerExtent then addTile(outer[1], outer[2], north[1], north[2]) end
+      if north[2] <= -innerExtent then addTile(outer[1], outer[2], north[1], north[2]) end
     end
   end
-  for _, xInterval in ipairs(eastX) do
-    for _, zInterval in ipairs(middleZ) do
-      addTile(xInterval[1], xInterval[2], zInterval[1], zInterval[2])
+  for _, east in ipairs(intervals) do
+    if east[1] >= innerExtent or east[2] <= -innerExtent then
+      for _, middle in ipairs(innerIntervals) do
+        addTile(east[1], east[2], middle[1], middle[2])
+      end
     end
   end
-  for _, xInterval in ipairs(westX) do
-    for _, zInterval in ipairs(middleZ) do
-      addTile(xInterval[1], xInterval[2], zInterval[1], zInterval[2])
-    end
-  end
-
   self.stats.horizonTileCount = #self.horizonTiles
-  self.runtime:SetAttribute("OceanHorizonMeshFallback", false)
-  self.runtime:SetAttribute("OceanHorizonCoverage", "four-band-annulus")
-  self.runtime:SetAttribute("OceanHorizonObjectCount", #self.horizonTiles)
+  self.runtime:SetAttribute("OceanHorizonCoverage", "transition-plus-static-annulus")
 end
 
-function OceanRenderer:_Sample(worldXZ: Vector2, serverTime: number, componentCap: number)
-  return self.waveField:SampleLagrangian(worldXZ, serverTime, {
-    inverseIterations = 2,
-    includeEvents = true,
-    componentCap = componentCap,
-    foamMultiplier = 1,
-  })
+function OceanRenderer:_AssignTopologyCaps()
+  local fullCap = self.waveField:GetGameplayComponentCap()
+  for index, ring in ipairs(self.rings) do
+    ring.componentCap = index == 1 and fullCap or math.min(self.profile.waveCap, fullCap)
+    ring.cadence = 1 / math.max(self.profile.nearCadence, 5)
+    ring.updateNormals = index - 1 < self.profile.normalRings
+  end
+  for index, ring in ipairs(self.rings) do
+    ring.sharedComponentCap = index < #self.rings and self.rings[index + 1].componentCap or math.min(6, fullCap)
+  end
+  for _, transition in ipairs(self.transitions or {}) do
+    transition.componentCap = math.min(self.profile.transitionWaveCap or 6, fullCap)
+    transition.sharedComponentCap = transition.componentCap
+    transition.cadence = 1 / math.max(self.profile.nearCadence, 5)
+    transition.updateNormals = true
+  end
+  if self.rings[#self.rings] then self.rings[#self.rings].updateNormals = true end
 end
 
-function OceanRenderer:_UpdateRing(ring, serverTime: number, cameraPosition: Vector3)
-  if ring.generation ~= self.generation or ring.frozen then return end
-  local baseSpacing = self.topologySpacing or ring.spacing
-  local snapped = Vector2.new(
-    math.floor(cameraPosition.X / baseSpacing + 0.5) * baseSpacing,
-    math.floor(cameraPosition.Z / baseSpacing + 0.5) * baseSpacing
-  )
-  local state = self.waveField:GetState()
-  local seaLevel = state.seaLevel
-  local function fail(reason: any)
-    self.stats.ringFailureCount += 1
-    recordRingFailure(ring, self.runtime, reason)
-  end
-  if snapped ~= ring.origin then
-    ring.origin = snapped
-    ring.part.CFrame = CFrame.new(snapped.X, seaLevel, snapped.Y)
-    local uvStart = os.clock()
-    for index, label in ipairs(ring.labels) do
-      local worldLabel = snapped + label
-      local ok, reason = pcall(function() ring.mesh:SetUV(ring.uvs[index], worldUV(worldLabel)) end)
-      if not ok and self.runtime:GetAttribute("OceanUVError") == nil then
-        local message = tostring(reason)
-        self.runtime:SetAttribute("OceanUVError", message)
-        warn("OceanRenderer | world UV update failed | " .. message)
-      end
+function OceanRenderer:_Build()
+  self.generation += 1
+  self.stats.meshGeneration = self.generation
+  self.stats.fallback = false
+  self.stats.horizonFailed = false
+  self.stats.ringFailureCount = 0
+  self:_DestroyRings()
+  self:_DestroyTransition()
+  self:_DestroyHorizon()
+  if self.fallback then self.fallback:Destroy() self.fallback = nil end
+  self.stats.requestedRingCount = math.min(self.profile.ringCount, MAX_NEAR_RINGS)
+  local nearOk, nearReason = pcall(function()
+    local resolutions = self.profile.ringResolutions or {self.profile.resolution}
+    local extents = self.profile.ringExtents or {}
+    for level = 1, self.stats.requestedRingCount do
+      local extent = extents[level]
+      if not extent then break end
+      if extent > MAX_EDITABLE_EXTENT then break end
+      local resolution = resolutions[level] or self.profile.resolution
+      local outerHalf = math.floor((resolution - 1) * 0.5)
+      local spacing = extent / math.max(outerHalf, 1)
+      local innerExtent = level == 1 and 0 or extents[level - 1]
+      local innerHalf = level == 1 and 0 or math.floor(innerExtent / spacing + 0.5)
+      local ring = self:_BuildMesh(string.format("OceanClipmap_L%d", level - 1), resolution, spacing, innerHalf, "near", level - 1)
+      table.insert(self.rings, ring)
+      self.stats.vertexCount += #ring.vertices + 2
+      self.stats.triangleCount += ring.triangleCount
+      if self.stats.vertexCount > MAX_INITIAL_VERTICES then error("near vertex budget exceeded") end
     end
-    self.stats.lastUVUpdateMs += (os.clock() - uvStart) * 1000
-  end
-  local outerExtent = math.max(ring.outerHalf * ring.spacing, 1)
-  for index, localLabel in ipairs(ring.labels) do
-    local worldLabel = ring.origin + localLabel
-    local full = self:_Sample(worldLabel, serverTime, ring.componentCap)
-    local shared = ring.componentCap == ring.sharedComponentCap
-      and full
-      or self:_Sample(worldLabel, serverTime, ring.sharedComponentCap)
-    local edge = math.max(math.abs(localLabel.X), math.abs(localLabel.Y)) / outerExtent
-    local residualWeight = edge > 0.68 and 1 - smoothstep((edge - 0.68) / 0.32) or 1
-    local baseWorld = Vector3.new(worldLabel.X, seaLevel, worldLabel.Y)
-    local sharedDisplacement = shared.position - baseWorld
-    local fullDisplacement = full.position - baseWorld
-    local displacement = sharedDisplacement:Lerp(fullDisplacement, residualWeight)
-    if not isFiniteVector3(displacement) or displacement.Magnitude > DEFAULT_VERTICAL_BOUNDS * 2 then
-      fail(string.format("invalid displacement index=%d", index))
-      return
-    end
-    ring.positions[index] = Vector3.new(localLabel.X, 0, localLabel.Y) + displacement
-    if not isFiniteVector3(ring.positions[index]) then
-      fail(string.format("invalid position index=%d", index))
-      return
-    end
-    if ring.updateNormals then
-      local normal = shared.normal:Lerp(full.normal, residualWeight)
-      if not isSafeNormal(normal) then
-        fail(string.format("invalid normal index=%d", index))
-        return
-      end
-      ring.normalValues[index] = normal.Unit
-    end
-  end
-  if #ring.positions ~= #ring.vertices or #ring.normalValues ~= #ring.normals then
-    fail("attribute array length mismatch")
-    return
-  end
-
-  local mesh = ring.mesh
-  local start = os.clock()
-  local vertexOk, vertexReason = pcall(function()
-    debug.profilebegin("Ocean/VertexCommit")
-    if ring.batchAvailable then
-      local batchOk, batchReason = pcall(function()
-        mesh:BatchSetValues(ring.vertices, ring.positions)
+    if #self.rings == 0 then error("no near rings were created") end
+  end)
+  if not nearOk then
+    self.runtime:SetAttribute("OceanRendererBuildError", tostring(nearReason))
+    self:_UseFallback(tostring(nearReason))
+  else
+    self.runtime:SetAttribute("OceanRendererBuildError", nil)
+    local transitionOk, transitionReason = pcall(function()
+      self:_BuildTransitionSectors(self.rings[#self.rings])
+    end)
+    if not transitionOk then
+      self.stats.horizonFailed = true
+      self.runtime:SetAttribute("OceanTransitionBuildError", tostring(transitionReason))
+      warn("OceanRenderer | transition disabled: " .. tostring(transitionReason))
+    else
+      self.runtime:SetAttribute("OceanTransitionBuildError", nil)
+      local horizonOk, horizonReason = pcall(function()
+        self:_BuildHorizon(self.transitionOuterExtent)
       end)
-      if not batchOk then
-        ring.batchAvailable = false
-        self.stats.batchAvailable = false
-        if not ring.batchWarned then
-          ring.batchWarned = true
-          warn("OceanRenderer | BatchSetValues position failed | " .. tostring(batchReason))
-        end
+      if not horizonOk then
+        self.stats.horizonFailed = true
+        self.runtime:SetAttribute("OceanHorizonBuildError", tostring(horizonReason))
+        warn("OceanRenderer | horizon disabled: " .. tostring(horizonReason))
+      else
+        self.runtime:SetAttribute("OceanHorizonBuildError", nil)
       end
     end
-    if not ring.batchAvailable then
-      for index, vertexId in ipairs(ring.vertices) do
-        mesh:SetPosition(vertexId, ring.positions[index])
-      end
+  end
+  self.stats.ringCount = #self.rings
+  self:_AssignTopologyCaps()
+  self.runtime:SetAttribute("OceanRendererVertexBudget", MAX_INITIAL_VERTICES)
+  self.runtime:SetAttribute("OceanRendererBatchMode", "singular-setter-client-benchmark")
+  self:_PublishStats()
+end
+
+function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number)
+  if ring.frozen then return end
+  if ring.origin ~= anchor then
+    ring.origin = anchor
+    ring.part.CFrame = CFrame.new(anchor.X, seaLevel, anchor.Y)
+  end
+
+  local startEval = os.clock()
+  local sharedCount = math.min(ring.sharedComponentCap, ring.componentCap)
+  for index = 1, #ring.vertices do
+    local x = anchor.X + ring.labelsX[index]
+    local z = anchor.Y + ring.labelsZ[index]
+    local residualWeight = 1
+    if ring.kind == "transition" then
+      local edge = math.max(math.abs(ring.labelsX[index]), math.abs(ring.labelsZ[index]))
+      local t = (edge - ring.innerExtent) / math.max(ring.outerExtent - ring.innerExtent, 1)
+      residualWeight = 1 - smoothstep(t)
+    elseif ring.componentCap > sharedCount then
+      local edge = math.max(math.abs(ring.labelsX[index]), math.abs(ring.labelsZ[index])) / math.max(ring.outerExtent, 1)
+      residualWeight = edge > 0.62 and 1 - smoothstep((edge - 0.62) / 0.38) or 1
+    end
+    local evaluated, normal = RenderEvaluator.Evaluate(
+      x,
+      z,
+      seaLevel,
+      plansA[ring.componentCap],
+      plansB[ring.componentCap],
+      blendAlpha,
+      sharedCount,
+      residualWeight
+    )
+    local base = Vector3.new(x, seaLevel, z)
+    local displacement = evaluated - base
+    if ring.kind == "transition" then
+      displacement *= residualWeight
+      normal = normal:Lerp(Vector3.yAxis, 1 - residualWeight).Unit
+    end
+    if not finiteVector(displacement) or displacement.Magnitude > MAX_VERTICAL_BOUNDS * 2 or not finiteVector(normal) then
+      ring.failureCount += 1
+      self.stats.ringFailureCount += 1
+      if ring.failureCount >= 3 then ring.frozen = true end
+      return
+    end
+    ring.positions[index] = Vector3.new(ring.labelsX[index], 0, ring.labelsZ[index]) + displacement
+    if ring.updateNormals then ring.normalValues[index] = normal end
+  end
+  self.stats.lastWaveEvaluateMs += (os.clock() - startEval) * 1000
+
+  local startCommit = os.clock()
+  debug.profilebegin("Ocean/VertexCommit")
+  local commitOk, commitReason = pcall(function()
+    for index, vertexId in ipairs(ring.vertices) do
+      ring.mesh:SetPosition(vertexId, ring.positions[index])
     end
   end)
-  pcall(debug.profileend)
-  if not vertexOk then
-    fail("vertex commit failed: " .. tostring(vertexReason))
-    self.stats.lastUpdateMs += (os.clock() - start) * 1000
+  debug.profileend()
+  self.stats.lastVertexCommitMs += (os.clock() - startCommit) * 1000
+  if not commitOk then
+    ring.failureCount += 1
+    self.stats.ringFailureCount += 1
+    if ring.failureCount >= 3 then ring.frozen = true end
+    self.runtime:SetAttribute("OceanRingFailureReason", tostring(commitReason))
     return
   end
 
   if ring.updateNormals then
+    local startNormals = os.clock()
+    debug.profilebegin("Ocean/Normals")
     local normalOk, normalReason = pcall(function()
-      debug.profilebegin("Ocean/Normals")
-      if ring.batchAvailable then
-        local batchOk, batchReason = pcall(function()
-          mesh:BatchSetValues(ring.normals, ring.normalValues)
-        end)
-        if not batchOk then
-          ring.batchAvailable = false
-          self.stats.batchAvailable = false
-          if not ring.batchWarned then
-            ring.batchWarned = true
-            warn("OceanRenderer | BatchSetValues normal failed | " .. tostring(batchReason))
-          end
-        end
-      end
-      if not ring.batchAvailable then
-        for index, normalId in ipairs(ring.normals) do
-          mesh:SetNormal(normalId, ring.normalValues[index])
-        end
+      for index, normalId in ipairs(ring.normals) do
+        ring.mesh:SetNormal(normalId, ring.normalValues[index])
       end
     end)
-    pcall(debug.profileend)
+    debug.profileend()
+    self.stats.lastNormalCommitMs += (os.clock() - startNormals) * 1000
     if not normalOk then
-      fail("normal commit failed: " .. tostring(normalReason))
-      self.stats.lastUpdateMs += (os.clock() - start) * 1000
+      ring.failureCount += 1
+      self.stats.ringFailureCount += 1
+      self.runtime:SetAttribute("OceanRingNormalFailure", tostring(normalReason))
       return
     end
+    ring.lastNormalServerTime = serverTime
   end
-  ring.invalidFrames = 0
   ring.failureCount = 0
   ring.lastCommittedServerTime = serverTime
-  self.stats.lastUpdateMs += (os.clock() - start) * 1000
 end
 
-function OceanRenderer:_UpdateHorizonTile(tile, serverTime: number)
-  if tile.generation ~= self.generation or tile.failed then return end
-  local seaLevel = self.waveField:GetState().seaLevel
-  local anchor = self.horizonAnchor
-  if tile.origin ~= anchor then
-    tile.origin = anchor
+function OceanRenderer:_UpdateHorizon(anchor: Vector2, seaLevel: number)
+  if self.horizonAnchor == anchor then return end
+  self.horizonAnchor = anchor
+  for _, tile in ipairs(self.horizonTiles) do
     tile.part.Position = Vector3.new(anchor.X + tile.center.X, seaLevel, anchor.Y + tile.center.Y)
   end
 end
 
 function OceanRenderer:_UpdateSeamStats()
+  if self.runtime:GetAttribute("OceanDebugSeams") ~= true then return end
   local maxPosition = 0
   local maxNormal = 0
-  local sampleCount = 0
-  local function committedAt(ring, world: Vector2)
-    local localLabel = world - ring.origin
-    local index = ring.labelIndex and ring.labelIndex[keyOf(localLabel.X, localLabel.Y)]
-    if not index then return nil, nil end
-    return ring.part.Position + ring.positions[index], ring.normalValues[index]
-  end
-  for level = 1, #self.rings - 1 do
-    local fine = self.rings[level]
-    local coarse = self.rings[level + 1]
-    local boundary = fine.outerHalf * fine.spacing
-    local sampleCountOnEdge = math.floor(boundary / coarse.spacing + 0.001)
-    for sampleIndex = -sampleCountOnEdge, sampleCountOnEdge do
-      local offset = sampleIndex * coarse.spacing
-      local points = {
-        Vector2.new(-boundary, offset),
-        Vector2.new(boundary, offset),
-        Vector2.new(offset, -boundary),
-        Vector2.new(offset, boundary),
-      }
-      for _, point in ipairs(points) do
-        local world = fine.origin + point
-        local finePosition, fineNormal = committedAt(fine, world)
-        local coarsePosition, coarseNormal = committedAt(coarse, world)
-        if finePosition and coarsePosition and fineNormal and coarseNormal then
-          sampleCount += 1
+  local count = 0
+  for index = 1, #self.rings - 1 do
+    local fine = self.rings[index]
+    local coarse = self.rings[index + 1]
+    local boundary = fine.outerExtent
+    local coarseStep = coarse.spacing
+    local steps = math.floor(boundary / coarseStep + 0.001)
+    for sampleIndex = -steps, steps do
+      local offset = sampleIndex * coarseStep
+      for _, point in ipairs({Vector2.new(-boundary, offset), Vector2.new(boundary, offset), Vector2.new(offset, -boundary), Vector2.new(offset, boundary)}) do
+        local fineIndex = fine.labelIndex[keyOf(point.X, point.Y)]
+        local coarseIndex = coarse.labelIndex[keyOf(point.X, point.Y)]
+        if fineIndex and coarseIndex then
+          local finePosition = fine.part.Position + fine.positions[fineIndex]
+          local coarsePosition = coarse.part.Position + coarse.positions[coarseIndex]
           maxPosition = math.max(maxPosition, (finePosition - coarsePosition).Magnitude)
-          maxNormal = math.max(maxNormal, math.deg(math.acos(math.clamp(fineNormal:Dot(coarseNormal), -1, 1))))
+          if fine.updateNormals and coarse.updateNormals then
+            local fineNormal = fine.normalValues[fineIndex]
+            local coarseNormal = coarse.normalValues[coarseIndex]
+            maxNormal = math.max(maxNormal, math.deg(math.acos(math.clamp(fineNormal:Dot(coarseNormal), -1, 1))))
+          end
+          count += 1
         end
       end
     end
   end
   self.stats.seamPositionError = maxPosition
   self.stats.seamNormalError = maxNormal
-  self.stats.seamSampleCount = sampleCount
-  self.stats.topologyStatus = sampleCount > 0 and "committed-geometry" or "awaiting-geometry"
-end
-
-function OceanRenderer:_Build()
-  self.generation += 1
-  self.topologySpacing = self.profile.spacing
-  self:_DestroyDebugSeams()
-  self:_DestroyRings()
-  self:_DestroyHorizon()
-  if self.fallback then
-    self.fallback:Destroy()
-    self.fallback = nil
-  end
-  self.stats.fallback = false
-  self.stats.horizonFailed = false
-  self.stats.ringFailureCount = 0
-  self.stats.meshGeneration = self.generation
-  self.stats.requestedRingCount = math.min(self.profile.ringCount, MAX_NEAR_RINGS)
-  self.runtime:SetAttribute("OceanRendererNearMeshBudget", MAX_NEAR_RINGS)
-  self.runtime:SetAttribute("OceanRendererVertexBudget", MAX_INITIAL_VERTICES)
-  self.runtime:SetAttribute("OceanRendererHorizonBudget", MAX_HORIZON_OBJECTS)
-  local buildStarted = os.clock()
-  local nearOk, nearReason = pcall(function()
-    for level = 0, self.stats.requestedRingCount - 1 do
-      local extent = self.profile.spacing * 2 ^ level * (self.profile.resolution - 1)
-      if extent > MAX_EDITABLE_EXTENT then break end
-      self:_BuildRing(level)
-      if self.stats.vertexCount > MAX_INITIAL_VERTICES then
-        error(string.format("near vertex budget exceeded: %d", MAX_INITIAL_VERTICES))
-      end
-    end
-    if #self.rings == 0 then error("no near rings were created") end
-  end)
-  if not nearOk then
-    local message = tostring(nearReason)
-    self.runtime:SetAttribute("OceanRendererBuildError", message)
-    self:_UseFallback(message)
-  else
-    self.runtime:SetAttribute("OceanRendererBuildError", nil)
-    local horizonOk, horizonReason = pcall(function() self:_BuildHorizon() end)
-    if not horizonOk then
-      self:_DestroyHorizon()
-      self.stats.horizonFailed = true
-      self.runtime:SetAttribute("OceanHorizonBuildError", tostring(horizonReason))
-      self.runtime:SetAttribute("OceanHorizonFailed", true)
-      warn("OceanRenderer | horizon disabled: " .. tostring(horizonReason))
-    else
-      self.runtime:SetAttribute("OceanHorizonBuildError", nil)
-      self.runtime:SetAttribute("OceanHorizonFailed", false)
-    end
-  end
-  self.runtime:SetAttribute("OceanRendererBuildMs", (os.clock() - buildStarted) * 1000)
-  self.stats.ringCount = #self.rings
-  self:_PublishStats()
-  self:_UpdateDebugSeams()
+  self.stats.seamSampleCount = count
+  self.stats.topologyStatus = count > 0 and maxPosition <= 0.02 and maxNormal <= 1 and "passed" or "failed"
 end
 
 function OceanRenderer:SetQuality(profileName: string)
   if profileName == "Fallback" then
     return {topologyChanged = false, rejected = true, reason = "fallback is initialization-only"}
   end
-  local nextProfile = QualityProfiles.Get(profileName)
-  if not nextProfile or nextProfile.resolution == 0 then
+  local profile = QualityProfiles.Get(profileName)
+  if not profile or profile.resolution == 0 or not profile.ringResolutions then
     return {topologyChanged = false, rejected = true, reason = "unknown quality profile"}
   end
   if self.qualityName == profileName then
     return {topologyChanged = false, unchanged = true}
   end
   self.qualityName = profileName
-  self.profile = nextProfile
+  self.profile = profile
   if self.running then
-    local fullCap = self.waveField:GetGameplayComponentCap()
-    for _, ring in ipairs(self.rings) do
-      ring.cadence = 1 / math.max(nextProfile.nearCadence / 2 ^ ring.level, 3)
-      ring.componentCap = ring.level == 0 and fullCap or math.min(nextProfile.waveCap, fullCap)
-      ring.sharedComponentCap = ring.level + 1 < #self.rings
-        and math.min(nextProfile.waveCap, fullCap)
-        or math.min(6, fullCap)
-      ring.updateNormals = ring.level <= nextProfile.normalRings
-    end
-  else
-    self.topologySpacing = nextProfile.spacing
+    self:_AssignTopologyCaps()
   end
-  self.runtime:SetAttribute("OceanQualityTopologyChanged", false)
-  return {topologyChanged = false}
+  return {topologyChanged = false, unchanged = false}
 end
 
 function OceanRenderer:SetBaseVisible(visible: boolean)
   self.baseVisible = visible
   for _, ring in ipairs(self.rings) do ring.part.Transparency = visible and 0 or 1 end
-  for _, tile in ipairs(self.horizonTiles) do tile.part.Transparency = visible and 0 or 1 end
+  for _, transition in ipairs(self.transitions or {}) do transition.part.Transparency = visible and 0 or 1 end
   if self.fallback then self.fallback.Transparency = visible and 0.05 or 1 end
+end
+
+function OceanRenderer:SetFarVisible(visible: boolean)
+  self.farVisible = visible
+  for _, tile in ipairs(self.horizonTiles) do tile.part.Transparency = visible and 0 or 1 end
 end
 
 function OceanRenderer:SetVisible(visible: boolean)
   self.visible = visible
   self:SetBaseVisible(visible)
+  self:SetFarVisible(visible)
 end
 
 function OceanRenderer:_Update(dt: number)
-  if not self.running then return end
+  if not self.running or not self.visible then return end
   local camera = Workspace.CurrentCamera
   if not camera then return end
-  local start = os.clock()
+  local started = os.clock()
   self.stats.lastUpdateMs = 0
   self.stats.lastUVUpdateMs = 0
-  self.serverTime = self.waveField:StepClock(dt)
-  if not self.stats.fallback then
-    for _, ring in ipairs(self.rings) do
-      ring.accumulator += dt
-      if ring.accumulator >= ring.cadence then
-        ring.accumulator %= ring.cadence
-        self:_UpdateRing(ring, self.serverTime, camera.CFrame.Position)
-      end
-    end
-    local horizonSpacing = math.max(self.topologySpacing or self.profile.spacing, HORIZON_REBASE_STUDS)
-    self.horizonAnchor = Vector2.new(
-      math.floor(camera.CFrame.Position.X / horizonSpacing + 0.5) * horizonSpacing,
-      math.floor(camera.CFrame.Position.Z / horizonSpacing + 0.5) * horizonSpacing
-    )
-    self:_UpdateDebugSeams()
-    self.horizonAccumulator += dt
-    if self.horizonAccumulator >= 0.5 then
-      self.horizonAccumulator = 0
-      for _, tile in ipairs(self.horizonTiles) do
-        self:_UpdateHorizonTile(tile, self.serverTime)
-      end
-    end
-    local frozenCount = 0
-    for _, ring in ipairs(self.rings) do
-      if ring.frozen then frozenCount += 1 end
-    end
-    self.runtime:SetAttribute("OceanFrozenRingCount", frozenCount)
-    for _, tile in ipairs(self.horizonTiles) do
-      if tile.failed then
-        self.stats.horizonFailed = true
-        self.runtime:SetAttribute("OceanHorizonFailed", true)
-      end
-    end
-    self.seamTimer += dt
-    if self.seamTimer >= 0.5 then
-      self.seamTimer = 0
-      self:_UpdateSeamStats()
-    end
-  else
-    if self.fallback then
-      self.fallback.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel, camera.CFrame.Position.Z)
+  self.stats.lastWaveEvaluateMs = 0
+  self.stats.lastVertexCommitMs = 0
+  self.stats.lastNormalCommitMs = 0
+  local serverTime = self.waveField:StepClock(math.clamp(dt, 0, 0.05))
+  local state = self.waveField:GetState()
+  local seaLevel = state.seaLevel
+  local anchor = Vector2.new(
+    math.floor(camera.CFrame.Position.X / self.topologySpacing + 0.5) * self.topologySpacing,
+    math.floor(camera.CFrame.Position.Z / self.topologySpacing + 0.5) * self.topologySpacing
+  )
+  local fullCap = self.waveField:GetGameplayComponentCap()
+  local blendAlpha = self.waveField:_BlendAlpha(serverTime)
+  local elapsed = serverTime - state.epochServerTime
+  local plansA = {}
+  local plansB = {}
+  local caps = {fullCap}
+  for _, ring in ipairs(self.rings) do table.insert(caps, ring.componentCap) end
+  for _, transition in ipairs(self.transitions or {}) do table.insert(caps, transition.componentCap) end
+  table.sort(caps)
+  local lastCap = nil
+  for _, cap in ipairs(caps) do
+    if cap ~= lastCap then
+      plansA[cap] = RenderEvaluator.Prepare(state.bankA, elapsed, cap)
+      if blendAlpha > 0 and #state.bankB > 0 then plansB[cap] = RenderEvaluator.Prepare(state.bankB, elapsed, cap) end
+      lastCap = cap
     end
   end
-  self.stats.lastOceanMs = (os.clock() - start) * 1000
+  for _, ring in ipairs(self.rings) do
+    ring.accumulator += dt
+    if ring.accumulator >= ring.cadence then
+      ring.accumulator %= ring.cadence
+      self:_UpdateRing(ring, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel)
+    end
+  end
+  for _, transition in ipairs(self.transitions or {}) do
+    transition.accumulator += dt
+    if transition.accumulator >= transition.cadence then
+      transition.accumulator %= transition.cadence
+      self:_UpdateRing(transition, serverTime, anchor, plansA, plansB, blendAlpha, seaLevel)
+    end
+  end
+  self.seamTimer += dt
+  if self.seamTimer >= 1 then
+    self.seamTimer = 0
+    self:_UpdateSeamStats()
+  end
+  self.stats.lastOceanMs = (os.clock() - started) * 1000
   self.stats.lastFrameMs = dt * 1000
+  self.stats.lastUpdateMs = self.stats.lastWaveEvaluateMs + self.stats.lastVertexCommitMs + self.stats.lastNormalCommitMs
   self:_PublishStats()
 end
 
@@ -870,15 +901,17 @@ function OceanRenderer:Start()
   if self.running then return end
   self.running = true
   self:_Build()
-  self.connection = RunService.RenderStepped:Connect(function(dt) self:_Update(dt) end)
+  self.connection = RunService.RenderStepped:Connect(function(dt)
+    self:_Update(dt)
+  end)
 end
 
 function OceanRenderer:Stop()
   self.generation += 1
-  self:_DestroyDebugSeams()
   if self.connection then self.connection:Disconnect() self.connection = nil end
   self.running = false
   self:_DestroyRings()
+  self:_DestroyTransition()
   self:_DestroyHorizon()
   if self.fallback then self.fallback:Destroy() self.fallback = nil end
 end

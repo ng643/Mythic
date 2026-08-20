@@ -7,8 +7,8 @@ OceanQualityController.__index = OceanQualityController
 
 local order = {"Ultra", "High", "Medium", "Low"}
 local indexByName = {Ultra = 1, High = 2, Medium = 3, Low = 4}
-local WARMUP_DURATION = 15
-local INITIAL_COOLDOWN = 10
+local WARMUP_DURATION = 2
+local INITIAL_COOLDOWN = 5
 local TRANSITION_COOLDOWN = 10
 
 local function topologyChangedFromResult(result: any): boolean
