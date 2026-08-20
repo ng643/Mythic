@@ -1,0 +1,11 @@
+{
+  "$className": "Configuration",
+  "$attributes": {
+    "FoamTexture": "rbxassetid://140229416139720",
+    "SprayTexture": "rbxassetid://138338217463878",
+    "WakeTexture": "rbxassetid://140229416139720",
+    "TextureWorkflow": "Generated locally, uploaded through Studio MCP",
+    "TextureAlpha": "Premultiplied transparent RGBA",
+    "TextureOwnership": "Experience-owned asset IDs"
+  }
+}

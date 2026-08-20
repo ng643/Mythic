@@ -34,31 +34,6 @@ local function worldUV(worldXZ: Vector2): Vector2
   return Vector2.new(worldXZ.X / UV_TILE_SCALE, worldXZ.Y / UV_TILE_SCALE)
 end
 
-local function addSurfaceAppearance(part: MeshPart, runtime: Folder)
-  local slot = game.ReplicatedStorage.Ocean.Assets.WaterAppearances:FindFirstChild("OceanWaterPBR")
-  local appearance = part:FindFirstChild("OceanSurfaceAppearance")
-  if not appearance then
-    appearance = Instance.new("SurfaceAppearance")
-    appearance.Name = "OceanSurfaceAppearance"
-    appearance.Parent = part
-  end
-  local function asset(name: string, fallback: string): string
-    local value = slot and slot:GetAttribute(name)
-    return type(value) == "string" and value ~= "" and value or fallback
-  end
-  local ok, reason = pcall(function()
-    appearance.ColorMap = asset("ColorMap", "rbxassetid://128922037556159")
-    appearance.NormalMap = asset("NormalMap", "rbxassetid://101286961773967")
-    appearance.RoughnessMap = asset("RoughnessMap", "rbxassetid://111100454366205")
-    appearance.MetalnessMap = asset("MetalnessMap", "rbxassetid://126230944196062")
-    appearance.AlphaMode = Enum.AlphaMode.Opaque
-  end)
-  if not ok then
-    local message = "SurfaceAppearance: " .. tostring(reason)
-    runtime:SetAttribute("OceanMaterialError", message)
-    warn("OceanRenderer | material setup failed | " .. message)
-  end
-end
 
 local function setOceanPartProperties(part: MeshPart, runtime: Folder)
   part.Anchored = true
@@ -69,10 +44,10 @@ local function setOceanPartProperties(part: MeshPart, runtime: Folder)
   part.Massless = true
   part.DoubleSided = true
   part.Material = Enum.Material.SmoothPlastic
+  part.MaterialVariant = "OceanWater"
   part.Color = Color3.fromRGB(5, 62, 86)
   part.Reflectance = 0
   part.Transparency = 0
-  addSurfaceAppearance(part, runtime)
 end
 
 local function setFaceUVs(mesh, faceId: number, ids: {number}, runtime: Folder)
@@ -118,6 +93,15 @@ function OceanRenderer.new(waveField)
     runtime = Instance.new("Folder")
     runtime.Name = "OceanRuntime"
     runtime.Parent = Workspace
+  end
+  for _, child in ipairs(runtime:GetChildren()) do
+    local name = child.Name
+    if string.sub(name, 1, 14) == "OceanClipmap_L"
+      or string.sub(name, 1, 13) == "OceanHorizon_"
+      or name == "OceanFallbackSurface"
+      or string.sub(name, 1, 18) == "OceanLOD_Boundary_" then
+      child:Destroy()
+    end
   end
   return setmetatable({
     waveField = waveField,
@@ -409,6 +393,34 @@ function OceanRenderer:_BuildHorizon()
         local width = xMax - xMin
         local depth = zMax - zMin
         local mesh = AssetService:CreateEditableMesh()
+        if not mesh then
+          local staticPart = Instance.new("Part")
+          staticPart.Name = string.format("OceanHorizon_%d", #self.horizonTiles + 1)
+          staticPart.Anchored = true
+          staticPart.CanCollide = false
+          staticPart.CanTouch = false
+          staticPart.CanQuery = false
+          staticPart.CastShadow = false
+          staticPart.Material = Enum.Material.SmoothPlastic
+          staticPart.MaterialVariant = "OceanWater"
+          staticPart.Color = Color3.fromRGB(5, 62, 86)
+          staticPart.Reflectance = 0
+          staticPart.Transparency = 0
+          staticPart.Size = Vector3.new(width, 0.25, depth)
+          staticPart.Parent = self.runtime
+          table.insert(self.horizonTiles, {
+            part = staticPart,
+            mesh = nil,
+            static = true,
+            center = Vector2.new((xMin + xMax) * 0.5, (zMin + zMax) * 0.5),
+            width = width,
+            depth = depth,
+            origin = Vector2.new(math.huge, math.huge),
+            failed = false,
+          })
+          self.runtime:SetAttribute("OceanHorizonMeshFallback", true)
+          continue
+        end
         local vertexMap = {}
         local vertices = {}
         local normals = {}
@@ -589,6 +601,13 @@ function OceanRenderer:_UpdateHorizonTile(tile, serverTime: number)
   local state = self.waveField:GetState()
   local seaLevel = state.seaLevel
   local anchor = self.horizonAnchor
+  if tile.static then
+    if tile.origin ~= anchor then
+      tile.origin = anchor
+      tile.part.Position = Vector3.new(anchor.X + tile.center.X, seaLevel, anchor.Y + tile.center.Y)
+    end
+    return
+  end
   if tile.origin ~= anchor then
     tile.origin = anchor
     tile.part.CFrame = CFrame.new(anchor.X + tile.center.X, seaLevel, anchor.Y + tile.center.Y)
@@ -686,7 +705,11 @@ function OceanRenderer:_Build()
     self:_BuildHorizon()
   end)
   if not ok then
-    self:_UseFallback(tostring(reason))
+    local message = tostring(reason)
+    self.runtime:SetAttribute("OceanRendererBuildError", message)
+    self:_UseFallback(message)
+  else
+    self.runtime:SetAttribute("OceanRendererBuildError", nil)
   end
   self.stats.ringCount = #self.rings
   self:_PublishStats()

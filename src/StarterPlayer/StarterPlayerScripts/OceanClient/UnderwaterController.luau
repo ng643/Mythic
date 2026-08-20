@@ -41,6 +41,7 @@ function UnderwaterController:Start()
     end
     local camera = Workspace.CurrentCamera
     if not camera then return end
+    debug.profilebegin("Ocean/Underwater")
     local serverTime = self.waveField:GetSynchronizedTime()
     local sample = self.waveField:SampleForGameplayWorldXZ(Vector2.new(camera.CFrame.Position.X, camera.CFrame.Position.Z), serverTime, {inverseIterations = 3})
     local y = camera.CFrame.Position.Y

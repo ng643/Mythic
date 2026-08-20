@@ -85,7 +85,7 @@ end
 for _, debugName in ipairs({"OceanDebugBuoyancy", "OceanDebugSeams", "OceanDebugMetrics"}) do
   if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, false) end
 end
-local requestedQuality = runtime:GetAttribute("OceanQualityOverride") or runtime:GetAttribute("OceanQuality") or "High"
+local requestedQuality = runtime:GetAttribute("OceanQualityOverride") or "High"
 
 local clock = OceanClock.new(initialState.epochServerTime)
 local waveField = WaveField.new(initialState, clock)
