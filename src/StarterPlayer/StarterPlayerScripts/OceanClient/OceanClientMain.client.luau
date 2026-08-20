@@ -88,7 +88,11 @@ end
 local qualityOverride = runtime:GetAttribute("OceanQualityOverride")
 local requestedQuality = type(qualityOverride) == "string" and qualityOverride or "High"
 local requestedProfile = QualityProfiles.Get(requestedQuality)
-if requestedQuality == "Fallback" or not requestedProfile or requestedProfile.resolution == 0 then
+local validRequestedQuality = requestedQuality == "Ultra"
+  or requestedQuality == "High"
+  or requestedQuality == "Medium"
+  or requestedQuality == "Low"
+if not validRequestedQuality or requestedQuality == "Fallback" or not requestedProfile or requestedProfile.resolution == 0 then
   requestedQuality = "High"
   runtime:SetAttribute("OceanQualityOverrideRejected", true)
 end
