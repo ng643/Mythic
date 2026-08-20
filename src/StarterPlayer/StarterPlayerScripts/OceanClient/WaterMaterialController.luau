@@ -45,7 +45,7 @@ function WaterMaterialController:_ApplyVisual(values)
       child.MaterialVariant = "OceanWater"
       child.Color = values.waterColor
       child.Reflectance = 0
-    elseif child:IsA("BasePart") and (child.Name == "OceanFallbackSurface" or child.Name == "OceanFarPlane") then
+    elseif child:IsA("BasePart") and child.Name == "OceanFallbackSurface" then
       child.Material = Enum.Material.SmoothPlastic
       child.MaterialVariant = "OceanWater"
       child.Color = values.waterColor

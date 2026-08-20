@@ -75,10 +75,8 @@ function OceanRenderer.new(waveField)
     running = false,
     visible = true,
     baseVisible = true,
-    farVisible = true,
     connection = nil,
     fallback = nil,
-    farPlane = nil,
     stats = {vertexCount = 0, triangleCount = 0, lastFrameMs = 0, lastOceanMs = 0, lastUpdateMs = 0, ringCount = 0, fallback = false, batchAvailable = false},
     serverTime = 0,
   }, OceanRenderer)
@@ -233,34 +231,12 @@ function OceanRenderer:_BuildFallback()
   self.stats.fallback = true
 end
 
-function OceanRenderer:_BuildFarPlane()
-  if self.farPlane then return end
-  local part = Instance.new("Part")
-  part.Name = "OceanFarPlane"
-  part.Anchored = true
-  part.CanCollide = false
-  part.CanTouch = false
-  part.CanQuery = false
-  part.CastShadow = false
-  part.Material = Enum.Material.SmoothPlastic
-  part.MaterialVariant = "OceanWater"
-  part.Color = Color3.fromRGB(5, 62, 86)
-  part.Reflectance = 0
-  part.Size = Vector3.new(8192, 0.25, 8192)
-  part.Transparency = 0
-  part.Parent = self.runtime
-  self.farPlane = part
-end
 
 function OceanRenderer:_UseFallback(reason: string)
   if not self.stats.fallback then
     warn("OceanRenderer | falling back to static surface: " .. reason)
   end
   self:_DestroyRings()
-  if self.farPlane then
-    self.farPlane:Destroy()
-    self.farPlane = nil
-  end
   self:_BuildFallback()
 end
 
@@ -269,10 +245,6 @@ function OceanRenderer:_Build()
   if self.fallback then
     self.fallback:Destroy()
     self.fallback = nil
-  end
-  if self.farPlane then
-    self.farPlane:Destroy()
-    self.farPlane = nil
   end
   self.stats.fallback = false
   local ok, reason = pcall(function()
@@ -290,11 +262,8 @@ function OceanRenderer:_Build()
   end)
   if not ok then
     self:_UseFallback(tostring(reason))
-  elseif not self.stats.fallback then
-    self:_BuildFarPlane()
   end
   self:SetBaseVisible(self.baseVisible)
-  self:SetFarVisible(self.farVisible)
   self.stats.ringCount = #self.rings
 end
 
@@ -326,17 +295,10 @@ function OceanRenderer:SetBaseVisible(visible: boolean)
   end
 end
 
-function OceanRenderer:SetFarVisible(visible: boolean)
-  self.farVisible = visible
-  if self.farPlane then
-    self.farPlane.Transparency = visible and 0 or 1
-  end
-end
 
 function OceanRenderer:SetVisible(visible: boolean)
   self.visible = visible
   self:SetBaseVisible(visible)
-  self:SetFarVisible(visible)
 end
 
 function OceanRenderer:_UpdateRing(ring, serverTime: number, cameraPosition: Vector3)
@@ -424,9 +386,6 @@ function OceanRenderer:_Update(dt: number)
   local start = os.clock()
   self.stats.lastUpdateMs = 0
   self.serverTime = self.waveField:StepClock(dt)
-  if self.farPlane then
-    self.farPlane.Position = Vector3.new(camera.CFrame.Position.X, self.waveField:GetState().seaLevel, camera.CFrame.Position.Z)
-  end
   if not self.stats.fallback then
     for _, ring in ipairs(self.rings) do
       ring.accumulator += dt
@@ -469,10 +428,6 @@ function OceanRenderer:Stop()
   if self.fallback then
     self.fallback:Destroy()
     self.fallback = nil
-  end
-  if self.farPlane then
-    self.farPlane:Destroy()
-    self.farPlane = nil
   end
 end
 

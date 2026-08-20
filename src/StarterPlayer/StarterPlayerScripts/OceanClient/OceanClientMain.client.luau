@@ -64,7 +64,7 @@ runtime:SetAttribute("OceanAdaptiveQuality", true)
 if runtime:GetAttribute("OceanExperimentalClipmaps") == nil then
   runtime:SetAttribute("OceanExperimentalClipmaps", true)
 end
-for _, debugName in ipairs({"OceanDebugBaseWater", "OceanDebugFarWater", "OceanDebugFoam", "OceanDebugSpray", "OceanDebugWakes", "OceanDebugBuoyancy"}) do
+for _, debugName in ipairs({"OceanDebugBaseWater", "OceanDebugFoam", "OceanDebugSpray", "OceanDebugWakes", "OceanDebugBuoyancy"}) do
   if runtime:GetAttribute(debugName) == nil then runtime:SetAttribute(debugName, true) end
 end
 local requestedQuality = runtime:GetAttribute("OceanQuality") or "High"
@@ -103,11 +103,10 @@ shorelineController:Start()
 
 local function applyDebugVisibility()
   renderer:SetBaseVisible(runtime:GetAttribute("OceanDebugBaseWater") ~= false)
-  renderer:SetFarVisible(runtime:GetAttribute("OceanDebugFarWater") ~= false)
 end
 applyDebugVisibility()
 local debugConnections = {}
-for _, debugName in ipairs({"OceanDebugBaseWater", "OceanDebugFarWater"}) do
+for _, debugName in ipairs({"OceanDebugBaseWater"}) do
   table.insert(debugConnections, runtime:GetAttributeChangedSignal(debugName):Connect(applyDebugVisibility))
 end
 
