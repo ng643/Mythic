@@ -79,7 +79,7 @@ function OceanRenderer.new(waveField)
     connection = nil,
     fallback = nil,
     farPlane = nil,
-    stats = {vertexCount = 0, triangleCount = 0, lastFrameMs = 0, lastOceanMs = 0, lastUpdateMs = 0, ringCount = 0, fallback = false},
+    stats = {vertexCount = 0, triangleCount = 0, lastFrameMs = 0, lastOceanMs = 0, lastUpdateMs = 0, ringCount = 0, fallback = false, batchAvailable = false},
     serverTime = 0,
   }, OceanRenderer)
 end
@@ -177,6 +177,8 @@ function OceanRenderer:_BuildRing(level: number)
   if level > 0 then addSkirtLoop(-innerHalf, innerHalf) end
   mesh:AddVertex(Vector3.new(0, -verticalBound, 0))
   mesh:AddVertex(Vector3.new(0, verticalBound, 0))
+  local batchAvailable = false
+  pcall(function() batchAvailable = type(mesh.BatchSetValues) == "function" end)
   local part = AssetService:CreateMeshPartAsync(Content.fromObject(mesh))
   part.Name = string.format("OceanClipmap_L%d", level)
   setOceanPartProperties(part)
@@ -201,11 +203,12 @@ function OceanRenderer:_BuildRing(level: number)
     componentCap = level == 0 and self.waveField:GetGameplayComponentCap() or math.min(profile.waveCap, self.waveField:GetGameplayComponentCap()),
     updateNormals = level <= profile.normalRings,
     triangleCount = triangleCount,
-    batchAvailable = false,
+    batchAvailable = batchAvailable,
     failed = false,
   }
   self.stats.vertexCount += #vertices
   self.stats.triangleCount += triangleCount
+  self.stats.batchAvailable = self.stats.batchAvailable or batchAvailable
   table.insert(self.rings, ring)
 end
 
@@ -380,14 +383,30 @@ function OceanRenderer:_UpdateRing(ring, serverTime: number, cameraPosition: Vec
   local start = os.clock()
   local ok = pcall(function()
     debug.profilebegin("Ocean/VertexCommit")
-    for index, vertexId in ipairs(ring.vertices) do
-      mesh:SetPosition(vertexId, ring.positions[index])
+    if ring.batchAvailable then
+      local batchOk = pcall(function()
+        mesh:BatchSetValues(Enum.MeshAttribute.Position, ring.vertices, ring.positions)
+      end)
+      if not batchOk then ring.batchAvailable = false end
+    end
+    if not ring.batchAvailable then
+      for index, vertexId in ipairs(ring.vertices) do
+        mesh:SetPosition(vertexId, ring.positions[index])
+      end
     end
     debug.profileend()
     if ring.updateNormals then
       debug.profilebegin("Ocean/Normals")
-      for index, normalId in ipairs(ring.normals) do
-        mesh:SetNormal(normalId, ring.normalValues[index])
+      if ring.batchAvailable then
+        local batchNormalOk = pcall(function()
+          mesh:BatchSetValues(Enum.MeshAttribute.Normal, ring.normals, ring.normalValues)
+        end)
+        if not batchNormalOk then ring.batchAvailable = false end
+      end
+      if not ring.batchAvailable then
+        for index, normalId in ipairs(ring.normals) do
+          mesh:SetNormal(normalId, ring.normalValues[index])
+        end
       end
       debug.profileend()
     end
