@@ -183,7 +183,7 @@ function WaterMaterialController:_RegisterSurface(child: Instance)
   child.MaterialVariant = variantPresent and self.materialVariant or ""
   child.Color = WATER_SURFACE_COLOR
   child.Transparency = 0
-  child.Reflectance = 0
+  child.Reflectance = 0.04
   -- Keep MeshPart.Color authoritative when the neutral ColorMap is empty.
   if not variantPresent and not self.warnedMissingVariant then
     self.warnedMissingVariant = true

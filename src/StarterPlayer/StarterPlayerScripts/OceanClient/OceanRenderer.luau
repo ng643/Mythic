@@ -80,7 +80,7 @@ local function setMeshPartProperties(part: MeshPart, runtime: Folder)
   part.Material = Enum.Material.SmoothPlastic
   part.MaterialVariant = materialVariantName()
   part.Color = BASE_COLOR
-  part.Reflectance = 0
+  part.Reflectance = 0.04
   part.Transparency = 0
   -- MaterialVariant supplies normal/roughness/metalness; an empty ColorMap
   -- must not create a white SurfaceAppearance over MeshPart.Color.
@@ -99,8 +99,7 @@ local function setStaticPartProperties(part: Part)
   part.CastShadow = false
   part.Material = Enum.Material.SmoothPlastic
   part.MaterialVariant = materialVariantName()
-  part.Color = BASE_COLOR
-  part.Reflectance = 0
+  part.Reflectance = 0.04
   part.Transparency = 0
 end
 
@@ -138,6 +137,7 @@ function OceanRenderer.new(waveField)
     qualityName = "High",
     profile = QualityProfiles.Get("High"),
     topologySpacing = 4,
+    anchorSpacing = 32,
     rings = {},
     transition = nil,
     transitions = {},
@@ -640,6 +640,8 @@ function OceanRenderer:_Build()
   self:_DestroyHorizon()
   if self.fallback then self.fallback:Destroy() self.fallback = nil end
   self.stats.requestedRingCount = math.min(self.profile.ringCount, MAX_NEAR_RINGS)
+  self.topologySpacing = self.profile.spacing
+  self.anchorSpacing = math.max(self.profile.spacing * 8, 32)
   local nearOk, nearReason = pcall(function()
     local resolutions = self.profile.ringResolutions or {self.profile.resolution}
     local extents = self.profile.ringExtents or {}
@@ -696,6 +698,7 @@ end
 function OceanRenderer:_UpdateRing(ring, serverTime: number, anchor: Vector2, plansA, plansB, blendAlpha: number, seaLevel: number, boundaryOnly: boolean?)
   if ring.frozen then return end
   if ring.origin ~= anchor then
+    boundaryOnly = false
     ring.origin = anchor
     ring.part.CFrame = CFrame.new(anchor.X, seaLevel, anchor.Y)
   end
@@ -845,6 +848,8 @@ function OceanRenderer:SetQuality(profileName: string)
   end
   self.qualityName = profileName
   self.profile = profile
+  self.topologySpacing = profile.spacing
+  self.anchorSpacing = math.max(profile.spacing * 8, 32)
   if self.running then
     self:_AssignTopologyCaps()
   end
@@ -883,8 +888,8 @@ function OceanRenderer:_Update(dt: number)
   local state = self.waveField:GetState()
   local seaLevel = state.seaLevel
   local anchor = Vector2.new(
-    math.floor(camera.CFrame.Position.X / self.topologySpacing + 0.5) * self.topologySpacing,
-    math.floor(camera.CFrame.Position.Z / self.topologySpacing + 0.5) * self.topologySpacing
+    math.floor(camera.CFrame.Position.X / self.anchorSpacing + 0.5) * self.anchorSpacing,
+    math.floor(camera.CFrame.Position.Z / self.anchorSpacing + 0.5) * self.anchorSpacing
   )
   local fullCap = self.waveField:GetGameplayComponentCap()
   local blendAlpha = self.waveField:_BlendAlpha(serverTime)

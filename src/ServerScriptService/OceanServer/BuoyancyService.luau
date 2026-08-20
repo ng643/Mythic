@@ -175,8 +175,8 @@ function BuoyancyService:_Step(dt: number)
       local controlMass = entry.dryMass + entry.payloadMass
       entry.effectiveMass = controlMass
 
-      local gain = math.clamp(entry.model:GetAttribute("BuoyancyGain") or 1.08, 1.0, 1.25)
-      local dampingRatio = math.clamp(entry.model:GetAttribute("DampingRatio") or 0.85, 0.65, 1.15)
+      local gain = math.clamp(entry.model:GetAttribute("BuoyancyGain") or 1.16, 1.0, 1.3)
+      local dampingRatio = math.clamp(entry.model:GetAttribute("DampingRatio") or 0.88, 0.65, 1.15)
       local aggregateForce = Vector3.zero
       local aggregateTorque = Vector3.zero
       local wetPoints = 0
@@ -236,7 +236,7 @@ function BuoyancyService:_Step(dt: number)
         aggregateTorque += (worldPosition - root.AssemblyCenterOfMass):Cross(pendingForce)
       end
 
-      local aggregateLimit = controlMass * Workspace.Gravity * 2.6
+      local aggregateLimit = controlMass * Workspace.Gravity * 3.0
       local aggregateScale = aggregateForce.Magnitude > aggregateLimit and aggregateLimit / aggregateForce.Magnitude or 1
       local torqueLimit = controlMass * Workspace.Gravity * 4
       local torqueScale = aggregateTorque.Magnitude > torqueLimit and torqueLimit / aggregateTorque.Magnitude or 1

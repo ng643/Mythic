@@ -142,17 +142,17 @@ function SprayController:_Tick(dt: number)
           and self.scheduler:Sample(Vector2.new(worldX, worldZ), now, {
             inverseIterations = 2,
             componentCap = self.waveField:GetGameplayComponentCap(),
-            foamMultiplier = 1.6,
+            foamMultiplier = 2.0,
           })
           or self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {
             inverseIterations = 2,
             componentCap = self.waveField:GetGameplayComponentCap(),
-            foamMultiplier = 1.6,
+            foamMultiplier = 2.0,
           })
         sampleCount += 1
         local distance = (sample.position - center).Magnitude
         local signal = sample.foam * 0.55 + sample.crestMotion * 0.25 + sample.compression * 0.15 + sample.slope * 0.05
-        local threshold = state.stormIntensity > 0.7 and 0.24 or state.stormIntensity > 0.35 and 0.34 or 0.48
+        local threshold = state.stormIntensity > 0.7 and 0.12 or state.stormIntensity > 0.35 and 0.22 or 0.28
         if signal > threshold and distance < MAX_DISTANCE then
           local key = tostring(cellX) .. ":" .. tostring(cellZ)
           local entry = self:_FindEntry(key)

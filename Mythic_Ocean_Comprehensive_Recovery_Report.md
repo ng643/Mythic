@@ -43,7 +43,7 @@ The baseline Trade and Gale deck captures showed the reported dark, highly repea
 
 The inspected live raft before repair had a 24x2x10 stud HullRoot, EffectiveDraft 4, point TargetSubmersion 2.2, RootPriority 0, Default collision groups, a non-massless seat, and `OceanNetworkOwnership=Driver`. Its Play trace reached a rotated/inverted state and unseated the character. A client snapshot also showed a disabled `OceanSwimForce` retaining a nonzero force vector.
 
-The active ColorMap asset was inspected as a high-contrast photo-like blue/bubbly map and was rejected. The generated foam disk and spray oval assets were also rejected. Normal/Roughness/Metalness IDs remain experience-owned; runtime Edit checks reported NormalMap fetch success, while RoughnessMap and MetalnessMap were not fetched before the Studio preload probe timed out.
+The active baseline ColorMap asset was inspected as a high-contrast photo-like blue/bubbly map and rejected. The generated foam disk and spray oval assets were also rejected. A new Studio-generated neutral water set is now promoted: ColorMap `114485532047931`, NormalMap `122673814251163`, RoughnessMap `84568670031055`, MetalnessMap `90459269207438`, Regular projection at 48 studs per tile. These generated thumbnails were still moderation-pending during the Edit inspection.
 
 ## Implemented changes
 
@@ -97,6 +97,8 @@ The active ColorMap asset was inspected as a high-contrast photo-like blue/bubbl
   - Removes custom UV creation and all per-vertex SetUV recenter calls; the active MaterialVariant path uses projection/StudsPerTile.
   - Uses explicit profile ring resolutions/extents and a 31x31 High L0 with progressively smaller/coarser rings.
   - Uses a bounded eight-sector transition annulus outside the final moving ring.
+  - Extends High moving-wave influence to a 1,920-stud half-extent before static horizon coverage.
+  - Rebases the complete moving/transition set on a 32-stud anchor and forces a full commit on rebase; camera movement within an anchor does not move stale geometry.
   - Morphs six shared long components C1-continuously to mean sea level/up normal across the transition.
   - Uses synchronized shared-edge commits and boundary-only updates for lower-cadence rings.
   - Keeps static horizon tiles outside the transition with the same material/tint.
@@ -110,14 +112,14 @@ The active ColorMap asset was inspected as a high-contrast photo-like blue/bubbl
 ### Material and VFX
 
 - `OceanWater.model.json` / `OceanWaterPBR.model.json`
-  - Removed the rejected photo-like ColorMap.
-  - Switched to Regular projection at 96 studs per tile.
-  - Retained inspected tangent normal, roughness, and black metalness maps.
-  - A live Play A/B test proved that an empty SurfaceAppearance ColorMap overrides MeshPart.Color with white. The active path now uses MaterialVariant projection with MeshPart.Color as the authoritative neutral-blue tint.
+  - Rejected the original photo-like ColorMap after pixel inspection.
+  - Promoted Studio-generated neutral ColorMap/NormalMap/RoughnessMap/MetalnessMap IDs.
+  - Uses Regular projection at 48 studs per tile.
+  - A live Play A/B test proved that an empty SurfaceAppearance ColorMap overrides MeshPart.Color with white. The active path now uses the generated MaterialVariant maps directly with MeshPart.Color and 0.04 reflectance.
 
 - `WaterMaterialController.luau`
-  - Does not create a SurfaceAppearance when the neutral ColorMap is empty.
-  - Applies one shared tint to near, transition, and horizon surfaces.
+  - Does not create a SurfaceAppearance over the generated MaterialVariant.
+  - Applies one shared dark-blue tint to near, transition, and horizon surfaces.
   - Tracks only known water instances instead of scanning/reassigning every RenderStepped transition frame.
   - Quantizes weather atmosphere updates and scopes asset-failure diagnostics to known map IDs.
   - Preloads the exact manifest asynchronously.
@@ -166,11 +168,11 @@ Final Edit-built High topology:
 | Component | Vertices | Triangles |
 |---|---:|---:|
 | Moving rings | 2,187 | 3,720 |
-| Transition sectors | 472 | 680 |
-| Total dynamic geometry | 2,659 | 4,400 |
-| Static horizon Parts | 36 | n/a |
+| Transition sectors | 576 | 864 |
+| Total dynamic geometry | 2,763 | 4,584 |
+| Static horizon Parts | 40 | n/a |
 
-Edit committed-boundary checks passed:
+Edit committed-boundary and recenter checks passed:
 
 - Near-ring seam position error: 0 studs.
 - Near-ring seam normal error: 0.0198 degrees.
@@ -178,6 +180,7 @@ Edit committed-boundary checks passed:
 - Moving/transition shared sample normal error: 0 degrees.
 - Transition outer boundary height error: 0 studs.
 - Transition outer boundary normal error: 0 degrees.
+- Camera movement within the 32-stud anchor causes zero mesh shift; crossing the anchor forces a full synchronized commit.
 - Renderer fallback: false.
 
 Smoke probes passed for ship registry registration, VFX controller construction, shared sample cache hits, and idempotent swim-force deactivation (`Enabled=false`, `Force=0,0,0`, state `Dry`).
@@ -187,7 +190,7 @@ Smoke probes passed for ship registry registration, VFX controller construction,
 - HullRoot position `(0,0,0)`, orientation `(0,0,0)`, RootPriority 127.
 - DriverSeat massless and welded; both parts in `OceanShip` collision group.
 - Eight balanced points, each weight 0.125, local Y -0.9, weighted centroid approximately `(0,-0.9,0)`.
-- EffectiveDraft 1.0, point TargetSubmersion 0.9.
+- EffectiveDraft 1.0, point TargetSubmersion 0.8, BuoyancyGain 1.22, point MaxForce 8000.
 - `OceanNetworkOwnership=Server`.
 - SpawnLocation removed; ShipSpawnPoint is a nonphysical attachment at HullRoot local `(0,2.5,0)`.
 

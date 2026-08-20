@@ -9,7 +9,7 @@ FoamController.__index = FoamController
 local FOAM_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 local CELL_SIZE = 24
 local TICK_RATE = 1 / 8
-local MAX_DISTANCE = 280
+local MAX_DISTANCE = 360
 
 local function hash(x: number, z: number): number
   local value = math.sin(x * 12.9898 + z * 78.233) * 43758.5453
@@ -187,7 +187,7 @@ function FoamController:_UpdateTrack(entry, sample, key: string, now: number, dt
   entry.ribbonB.Position = Vector3.new(width, 0, 0)
   entry.ribbon.Enabled = true
   entry.emitter.Enabled = true
-  if now - entry.lastEmit > 0.35 and entry.foam > 0.38 then
+  if now - entry.lastEmit > 0.35 and entry.foam > 0.26 then
     entry.emitter:Emit(math.clamp(math.floor(entry.foam * 4), 1, 5))
     entry.lastEmit = now
   end
@@ -218,17 +218,17 @@ function FoamController:_Tick(dt: number)
           and self.scheduler:Sample(Vector2.new(worldX, worldZ), now, {
             inverseIterations = 2,
             componentCap = self.waveField:GetGameplayComponentCap(),
-            foamMultiplier = 1.5,
+            foamMultiplier = 2.0,
           })
           or self.waveField:SampleWorldXZ(Vector2.new(worldX, worldZ), now, {
             inverseIterations = 2,
             componentCap = self.waveField:GetGameplayComponentCap(),
-            foamMultiplier = 1.5,
+            foamMultiplier = 2.0,
           })
         sampleCount += 1
         local distance = (sample.position - center).Magnitude
         local signal = sample.foam * 0.72 + sample.crestMotion * 0.12 + sample.slope * 0.08 + sample.foamPersistence * 0.08
-        if signal > 0.16 and distance < MAX_DISTANCE then
+        if signal > 0.10 and distance < MAX_DISTANCE then
           local key = tostring(cellX) .. ":" .. tostring(cellZ)
           local entry = self:_FindEntry(key)
           if entry then
