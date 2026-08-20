@@ -18,7 +18,7 @@ local MAX_HORIZON_OBJECTS = 64
 local DEFAULT_HORIZON_RANGE = 6000
 local HORIZON_TILE_MAX_SIZE = 1800
 local MAX_VERTICAL_BOUNDS = 96
-local BASE_COLOR = Color3.fromRGB(224, 238, 240)
+local BASE_COLOR = Color3.fromRGB(7, 64, 91)
 
 local function smoothstep(value: number): number
   local t = math.clamp(value, 0, 1)
@@ -82,9 +82,10 @@ local function setMeshPartProperties(part: MeshPart, runtime: Folder)
   part.Color = BASE_COLOR
   part.Reflectance = 0
   part.Transparency = 0
-  applySurfaceAppearance(part)
+  -- MaterialVariant supplies normal/roughness/metalness; an empty ColorMap
+  -- must not create a white SurfaceAppearance over MeshPart.Color.
   if runtime:GetAttribute("OceanMaterialPath") == nil then
-    runtime:SetAttribute("OceanMaterialPath", "SurfaceAppearance+MaterialVariant")
+    self.runtime:SetAttribute("OceanMaterialPath", "MaterialVariant")
     runtime:SetAttribute("OceanUVSpace", "MaterialVariant.StudsPerTile")
     runtime:SetAttribute("OceanWorldLockedUV", true)
   end

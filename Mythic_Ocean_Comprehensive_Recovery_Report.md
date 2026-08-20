@@ -113,9 +113,10 @@ The active ColorMap asset was inspected as a high-contrast photo-like blue/bubbl
   - Removed the rejected photo-like ColorMap.
   - Switched to Regular projection at 96 studs per tile.
   - Retained inspected tangent normal, roughness, and black metalness maps.
+  - A live Play A/B test proved that an empty SurfaceAppearance ColorMap overrides MeshPart.Color with white. The active path now uses MaterialVariant projection with MeshPart.Color as the authoritative neutral-blue tint.
 
 - `WaterMaterialController.luau`
-  - Keeps SurfaceAppearance instead of destroying it.
+  - Does not create a SurfaceAppearance when the neutral ColorMap is empty.
   - Applies one shared tint to near, transition, and horizon surfaces.
   - Tracks only known water instances instead of scanning/reassigning every RenderStepped transition frame.
   - Quantizes weather atmosphere updates and scopes asset-failure diagnostics to known map IDs.

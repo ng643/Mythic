@@ -11,7 +11,7 @@ local WaterMaterialController = {}
 WaterMaterialController.__index = WaterMaterialController
 
 local UV_SPACE = "MaterialVariant.StudsPerTile"
-local WATER_SURFACE_COLOR = Color3.fromRGB(224, 238, 240)
+local WATER_SURFACE_COLOR = Color3.fromRGB(7, 64, 91)
 
 local function normalizeAssetId(value: any): string
   local text = tostring(value)
@@ -114,7 +114,7 @@ end
 
 function WaterMaterialController:_PublishManifest(values)
   local runtime = self.runtime
-  runtime:SetAttribute("OceanMaterialPath", "SurfaceAppearance+MaterialVariant")
+  runtime:SetAttribute("OceanMaterialPath", "MaterialVariant")
   runtime:SetAttribute("OceanMaterialVariant", self.materialVariant)
   runtime:SetAttribute("OceanMaterialManifestVersion", self.manifestVersion)
   runtime:SetAttribute("OceanMaterialManifestSource", self.manifestSource)
@@ -184,9 +184,7 @@ function WaterMaterialController:_RegisterSurface(child: Instance)
   child.Color = WATER_SURFACE_COLOR
   child.Transparency = 0
   child.Reflectance = 0
-  if child:IsA("MeshPart") then
-    self:_ApplySurfaceAppearance(child)
-  end
+  -- Keep MeshPart.Color authoritative when the neutral ColorMap is empty.
   if not variantPresent and not self.warnedMissingVariant then
     self.warnedMissingVariant = true
     warn("WaterMaterialController | configured MaterialVariant is missing: " .. self.materialVariant)
