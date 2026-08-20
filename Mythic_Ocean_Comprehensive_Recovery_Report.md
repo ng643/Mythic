@@ -5,7 +5,7 @@ Status: implementation complete for the reachable code and Edit-DataModel checks
 ## Repository and place
 
 - Audited baseline: `064480becf992afa7662b31a5995f1fedc34bade`.
-- Current repository commit: `bf694b6` (`Pivot ocean to coherent Gerstner macro surface`).
+- Current repository commit: `64aafbb` (`Correct actual water startup faces and ship stability`).
 - Branch: `main`, synchronized with `origin/main`.
 - Place: Mythic, place ID `89252995862215`.
 - Studio: `0.735.0.7351131`, AMD Radeon 880M, Vulkan, 32 GB host memory, 2880-wide Studio viewport.
