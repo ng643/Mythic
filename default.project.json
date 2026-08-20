@@ -1,0 +1,29 @@
+{
+  "name": "Mythic",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Ocean": {
+        "$path": "src/ReplicatedStorage/Ocean",
+        "Assets": {
+          "$className": "Folder",
+          "MeshTemplates": { "$className": "Folder" },
+          "WaterAppearances": { "$className": "Folder" },
+          "VFXTemplates": { "$className": "Folder" }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "OceanServer": {
+        "$path": "src/ServerScriptService/OceanServer"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "OceanClient": {
+          "$path": "src/StarterPlayer/StarterPlayerScripts/OceanClient"
+        }
+      }
+    }
+  }
+}
